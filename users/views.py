@@ -17,8 +17,10 @@ def login(request):
             UserInfo.objects.filter(phone = username).first()
     )
     if current_user is None:
+        print(2)
         return JsonResponse({'errno': 100002, 'msg': '用户不存在'})
     if password != current_user.password:
+        print(3)
         return JsonResponse({'errno': 100003, 'msg': '密码错误'})
     if not request.session.session_key:
         request.session.save()  # 保存之后生成session_key，之后前端以此为标头请求后端
@@ -26,6 +28,7 @@ def login(request):
     print(f"Session ID: {request.session.session_key}")
     print(f"Session UID: {request.session.get('uid')}")
     data = {
+        'user_id': current_user.user_id,
         'username': current_user.username,
         'password': current_user.password,
         'session_id': session_id,

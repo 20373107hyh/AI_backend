@@ -144,9 +144,9 @@ def remove_service_by_id(input_client, service_name):
 @csrf_exempt
 def show_container(request):
     container_list = Container.objects.all()
-    container_list = list(container_list)
     container_list = [{
         'id': container.container_id,
+        'author_name': container.author_id.realname,
         'name': container.container_name,
         'url': container.container_url,
     } for container in container_list]
@@ -168,6 +168,8 @@ def show_images(request):
 def add_new_container(request):
     image_name = request.POST.get('image_name')
     container_name = request.POST.get('container_name')
+    author_id = request.POST.get('author_id')
+    author = UserInfo.objects.get(user_id=author_id)
     network_name = 'test'
     # author = info['author']
     # author = UserInfo.objects.filter(realname=author).first()
@@ -181,6 +183,7 @@ def add_new_container(request):
     url = get_service_url_by_id(client, container_name)
     new_container = Container()
     new_container.container_id = container.short_id
+    new_container.author_id = author
     new_container.container_name = container.name
     new_container.container_url = url
     new_container.save()
@@ -288,6 +291,8 @@ def start_container(request):
 def create_course(request):
     course_name = request.POST.get('course_name')
     course_intro = request.POST.get('course_intro')
+    author_id = request.POST.get('author_id')
+    author = UserInfo.objects.get(user_id=author_id)
     course_aim = request.POST.get('course_aim')
     use_image_name = request.POST.get('use_image_name')
     course_limit_time = request.POST.get('course_limit_time')
@@ -301,6 +306,7 @@ def create_course(request):
         course_limit_time=course_limit_time,
         course_difficulty=course_difficulty,
         course_chapter=course_chapter,
+        author_id=author,
     )
     new_course.save()
     return JsonResponse({'errno': 100000, 'msg': '课程创建成功'})
@@ -312,6 +318,7 @@ def list_course(request):
     course_list = list(courses)
     course_list_json = [{
         "course_id": course.course_id,
+        "author_name": course.author_id.realname,
         "course_name": course.course_name,
         "course_intro": course.course_intro,
         "course_aim": course.course_aim,
@@ -341,6 +348,7 @@ def get_course_info(request):
     if course:
         course_json = {
             "course_id": course.course_id,
+            "author_name": course.author_id.realname,
             "course_name": course.course_name,
             "course_intro": course.course_intro,
             "course_aim": course.course_aim,
@@ -357,32 +365,45 @@ def get_course_info(request):
 @csrf_exempt
 def create_experiment(request):
     course_id = request.POST.get('course_id')
+    user_id = request.POST.get('user_id')
+    user = UserInfo.objects.get(user_id=user_id)
     course = Course.objects.get(course_id=course_id)
     if course:
-        image = course.use_image_name
-        url = ''
-        time = course.course_limit_time * 3600
-        new_experiment = Experiment(
-            course=course,
-            experiment_countdown=time,
-            experiment_url=url,
-        )
-        new_experiment.save()
-        container_name = 'experiment_' + str(new_experiment.experiment_id)
-        print(container_name)
-        client = docker.from_env()
-        create_service(client, image, 'test', container_name, 2)
-        url = get_service_url_by_id(client, container_name)
-        print(url)
-        new_experiment.experiment_url = url
-        new_experiment.save()
-        data = {
-            'experiment_id': new_experiment.experiment_id,
-            'experiment_course': new_experiment.course.course_id,
-            'experiment_url': new_experiment.experiment_url,
-            'experiment_countdown': new_experiment.experiment_countdown,
-        }
-        return JsonResponse({'errno': 100000, 'msg': '实验创建成功', 'data': data})
+        if Experiment.objects.filter(user_id=user_id, course_id=course_id).exists():
+            experiment = Experiment.objects.get(user_id=user_id, course_id=course_id)
+            data = {
+                'experiment_id': experiment.experiment_id,
+                'experiment_course': experiment.course.course_id,
+                'experiment_url': experiment.experiment_url,
+                'experiment_countdown': experiment.experiment_countdown,
+            }
+            return JsonResponse({'errno': 100000, 'msg': '实验创建成功', 'data': data})
+        else:
+            image = course.use_image_name
+            url = ''
+            time = course.course_limit_time * 3600
+            new_experiment = Experiment(
+                course=course,
+                user_id=user,
+                experiment_countdown=time,
+                experiment_url=url,
+            )
+            new_experiment.save()
+            container_name = 'experiment_' + str(new_experiment.experiment_id)
+            print(container_name)
+            client = docker.from_env()
+            create_service(client, image, 'test', container_name, 2)
+            url = get_service_url_by_id(client, container_name)
+            print(url)
+            new_experiment.experiment_url = url
+            new_experiment.save()
+            data = {
+                'experiment_id': new_experiment.experiment_id,
+                'experiment_course': new_experiment.course.course_id,
+                'experiment_url': new_experiment.experiment_url,
+                'experiment_countdown': new_experiment.experiment_countdown,
+            }
+            return JsonResponse({'errno': 100000, 'msg': '实验创建成功', 'data': data})
     else:
         return JsonResponse({'errno': 100001, 'msg': '实验创建失败'})
 
@@ -401,3 +422,13 @@ def delete_experiment(request):
     remove_service_by_id(client, container_name)
     experiment.delete()
     return JsonResponse({'errno': 100000, 'msg': '实验删除成功'})
+
+
+@csrf_exempt
+def save_experiment(request):
+    experiment_id = request.POST.get('experiment_id')
+    countdown = request.POST.get('countdown')
+    experiment = Experiment.objects.get(experiment_id=experiment_id)
+    experiment.experiment_countdown = countdown
+    experiment.save()
+    return JsonResponse({'errno': 100000, 'msg': '实验保存成功'})

@@ -7,7 +7,7 @@ class Images(models.Model):
     image_name = models.CharField('镜像名', max_length=100)
     create_time = models.DateTimeField('镜像创建时间', auto_now_add=True)
     update_time = models.DateTimeField('镜像更新时间', auto_now=True)
-    # author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
 
     def __str__(self):
         return str(self.image_id)
@@ -23,7 +23,7 @@ class Container(models.Model):
     container_url = models.URLField('容器URL')
     create_time = models.DateTimeField('容器创建时间', auto_now_add=True)
     update_time = models.DateTimeField('容器更新时间', auto_now=True)
-    # author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
 
     def __str__(self):
         return str(self.container_id)
@@ -35,6 +35,7 @@ class Container(models.Model):
 
 class Course(models.Model):
     course_id = models.AutoField('课程ID', primary_key=True)
+    author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
     use_image_name = models.CharField('使用镜像名', max_length=100)
     course_name = models.CharField('课程名称', max_length=100)
     course_intro = models.CharField('课程简介', max_length=1000)
@@ -68,6 +69,7 @@ class Score(models.Model):
 
 class Experiment(models.Model):
     experiment_id = models.AutoField('实验ID', primary_key=True)
+    user_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
     course = models.ForeignKey(Course, on_delete=models.CASCADE)
     experiment_countdown = models.IntegerField('实验倒计时')
     experiment_url = models.URLField('实验url')
