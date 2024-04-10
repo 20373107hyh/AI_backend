@@ -30,6 +30,7 @@ def create_service(input_client, image_name, network_name, service_name, task_nu
     networks = [network_name]
     environment = {
         "JUPYTER_TOKEN": "123456789",
+        'JUPYTER_NOTEBOOK_CONFIG': 'c.NotebookApp.tornado_settings={"headers":{"Content-Security-Policy":"frame-ancestors *"}}',
     }
     service = input_client.services.create(
         image_name,
