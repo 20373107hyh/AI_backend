@@ -6,7 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from student.models import Student_Courses
 from teacher.models import Course
 
-# Create your views here.
+
 @csrf_exempt
 def get_course_list(request):
 
@@ -29,6 +29,7 @@ def get_course_list(request):
         return JsonResponse({'errno': 100000, 'msg': '请求课程成功', 'data': courses_info})
     else:
         return JsonResponse({'errno': 100001, 'msg': '未能找到该学生的课程'})
+
 
 @csrf_exempt
 def get_course(request):

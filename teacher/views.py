@@ -1,12 +1,13 @@
 from django.core.exceptions import ObjectDoesNotExist
-from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse
 from teacher.models import Images, Container, Course, Score, Experiment
 from users.models import UserInfo
 from time import sleep
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
 from docker.errors import APIError
-
+import os
 import json
 import docker
 
@@ -142,6 +143,51 @@ def remove_service_by_id(input_client, service_name):
     service.remove()
 
 
+def get_filenames_in_folder(folder_path):
+    filenames = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
+    return filenames
+
+
+@csrf_exempt
+def upload_file(request):
+    files = request.FILES.getlist('file[]')
+    user_id = request.POST.get('user_id')
+    container_id = request.POST.get('container_id')
+    print("upload")
+    print(user_id, container_id,files)
+    for file in files:
+        save_path = 'users_{}/container_{}/{}'.format(user_id, container_id, file.name)
+        print(save_path)
+        default_storage.save(save_path, ContentFile(file.read()))
+    return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+@csrf_exempt
+def load_files(request):
+    user_id = request.POST.get('user_id')
+    container_id = request.POST.get('container_id')
+    print("load")
+    print(user_id, container_id)
+    dir_path = "users_" + str(user_id) + "/container_" + str(container_id)
+    os.makedirs(dir_path, exist_ok=True)
+    files = get_filenames_in_folder(dir_path)
+    return JsonResponse({'errno': 100000, 'msg': '文件查找成功', 'data': files})
+
+
+@csrf_exempt
+def delete_file(request):
+    user_id = request.POST.get('user_id')
+    container_id = request.POST.get('container_id')
+    file_name = request.POST.get('file_name')
+    dir_path = "users_" + str(user_id) + "/container_" + str(container_id)
+    file_path = dir_path + "/" + file_name
+    try:
+        os.remove(file_path)
+        return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
+    except OSError as e:
+        return JsonResponse({'errno': 100001, 'msg': e.strerror})
+
+
 @csrf_exempt
 def show_container(request):
     container_list = Container.objects.all()
@@ -263,6 +309,19 @@ def stop_container(request):
     #     return JsonResponse({'errno': 100000, 'msg': '容器停止运行成功'})
     # else:
     #     return JsonResponse({'errno': 100002, 'msg': '容器不存在'})
+
+
+@csrf_exempt
+def search_container(request):
+    container_id = request.POST.get('container_id')
+    container = Container.objects.filter(container_id=container_id).first()
+    container_info = {
+        'container_id': container.container_id,
+        'container_name': container.container_name,
+        'container_url': container.container_url,
+        'author': container.author_id.realname
+    }
+    return JsonResponse({'errno': 100000, 'msg': '容器查询成功', 'data': container_info})
 
 
 @csrf_exempt

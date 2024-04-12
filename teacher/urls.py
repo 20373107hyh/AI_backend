@@ -7,6 +7,7 @@ urlpatterns = [
     path('add_new_container/', views.add_new_container, name='add_new_container'),
     path('add_new_image/', views.add_new_image, name='add_new_image'),
     path('stop_container/', views.stop_container, name='stop_container'),
+    path('search_container/', views.search_container, name='search_container'),
     path('delete_container/', views.delete_container, name='delete_container'),
     path('delete_image/', views.delete_image, name='delete_image'),
     path('start_container/', views.start_container, name='start_container'),
@@ -16,5 +17,8 @@ urlpatterns = [
     path('get_course_info/', views.get_course_info, name='get_course_info'),
     path('create_experiment/', views.create_experiment, name='create_experiment'),
     path('delete_experiment/', views.delete_experiment, name='delete_experiment'),
-    path('save_experiment/', views.save_experiment, name='save_experiment')
+    path('save_experiment/', views.save_experiment, name='save_experiment'),
+    path('upload_file/', views.upload_file, name='upload_file'),
+    path('load_files/', views.load_files, name='load_files'),
+    path('delete_file/', views.delete_file, name='delete_file'),
 ]
