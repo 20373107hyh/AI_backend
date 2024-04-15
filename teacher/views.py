@@ -1,6 +1,11 @@
+import secrets
+import socket
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse
+from docker.types import Resources
+
 from teacher.models import Images, Container, Course, Score, Experiment
 from users.models import UserInfo
 from time import sleep
@@ -10,7 +15,7 @@ from docker.errors import APIError
 import os
 import json
 import docker
-
+import re
 
 def list_container(input_client):
     container_list = input_client.containers.list(all=True)
@@ -27,19 +32,21 @@ def run_container(input_client, image_name):
     return container
 
 
-def create_service(input_client, image_name, network_name, service_name, task_num):
+def create_service(input_client, token, image_name, network_name, service_name, task_num, num_cpu, mem_size, http_port, ssh_port):
     networks = [network_name]
     environment = {
-        "JUPYTER_TOKEN": "123456789",
+        "JUPYTER_TOKEN": token,
         'JUPYTER_NOTEBOOK_CONFIG': 'c.NotebookApp.tornado_settings={"headers":{"Content-Security-Policy":"frame-ancestors *"}}',
     }
+    resources = Resources(mem_limit=mem_size, cpu_limit=num_cpu)
     service = input_client.services.create(
         image_name,
         name=service_name,
         networks=networks,
         mode=docker.types.services.ServiceMode('replicated', replicas=task_num),
-        endpoint_spec=docker.types.EndpointSpec(ports=[{'TargetPort': 8888}]),
+        endpoint_spec=docker.types.EndpointSpec(ports={8888: http_port}),
         env=environment,
+        resources=resources,
     )
     print(service.name)
     print(service.short_id)
@@ -62,20 +69,12 @@ def get_url(container):
         return 'log error, not found URL'
 
 
-def get_service_url_by_id(input_client, service_name):
+def get_service_url_by_id(input_client, service_name, token, http_port):
     service = input_client.services.get(service_name)
-    port = 0
-    for port_item in service.attrs['Endpoint']['Ports']:
-        if port_item['TargetPort'] == 8888:
-            port = port_item['PublishedPort']
-            print(port)
-            break
-        else:
-            return 'error, cannot find port'
     nodes = input_client.nodes.list()
     node_details = nodes[0].attrs
     ip = node_details['Status']['Addr']
-    return 'http://' + ip + ':' + str(port) + '/lab?token=123456789'
+    return 'http://' + ip + ':' + str(http_port) + '/lab?token=' + token
 # def get_url_by_id(input_client, container_id):
 #     # 获取并解析容器日志
 #     container = input_client.containers.get(container_id)
@@ -211,13 +210,32 @@ def show_images(request):
     return HttpResponse(json.dumps({'errno': 100000, 'msg': '镜像查询成功', 'data': image_names}, ensure_ascii=False), content_type="application/json;charset=UTF-8")
 
 
+def get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+
 @csrf_exempt
 def add_new_container(request):
     image_name = request.POST.get('image_name')
     container_name = request.POST.get('container_name')
     author_id = request.POST.get('author_id')
+    config = request.POST.get('config')
+    print(config)
+    match = re.search(r'(\d+)核CPU (\d+)G内存', config)
+    num_cpu, mem_size = match.groups()
+    num_cpu_m = int(float(num_cpu) * 10 ** 9)
+    mem_size_m = int(mem_size) * 1024 * 1024 * 1024
     author = UserInfo.objects.get(user_id=author_id)
     network_name = 'test'
+    token = secrets.token_hex(16)
+    ports = set()
+    while len(ports) < 2:
+        port = get_free_port()
+        ports.add(port)
+
+    ssh_port, http_port = ports
     # author = info['author']
     # author = UserInfo.objects.filter(realname=author).first()
     # if author is not None:
@@ -226,16 +244,31 @@ def add_new_container(request):
     #     return JsonResponse({'errno': 100002, 'msg': '作者不存在'})
     client = docker.from_env()
     print(container_name)
-    container = create_service(client, image_name, network_name, container_name, 2)
-    url = get_service_url_by_id(client, container_name)
+    container = create_service(
+        client,
+        token,
+        image_name,
+        network_name,
+        container_name,
+        1,
+        num_cpu_m,
+        mem_size_m,
+        http_port,
+        ssh_port
+    )
+    url = get_service_url_by_id(client, container_name, token, http_port)
     new_container = Container()
     new_container.container_id = container.short_id
     new_container.author_id = author
     new_container.container_name = container.name
     new_container.container_url = url
+    new_container.cpu_num = num_cpu
+    new_container.mem_size = mem_size
+    new_container.ssh_port = ssh_port
+    new_container.http_port = http_port
     new_container.save()
     print(url)
-    return JsonResponse({'errno': 100000, 'msg': '容器创建成功', 'data': url})
+    return JsonResponse({'errno': 100000, 'msg': '容器创建成功'})
     # if container:
     #     url = get_url(container)
     #     new_container = Container()
@@ -319,7 +352,11 @@ def search_container(request):
         'container_id': container.container_id,
         'container_name': container.container_name,
         'container_url': container.container_url,
-        'author': container.author_id.realname
+        'author': container.author_id.realname,
+        'cpu_num': container.cpu_num,
+        'mem_size': container.mem_size,
+        'http_port': container.http_port,
+        'ssh_port': container.ssh_port,
     }
     return JsonResponse({'errno': 100000, 'msg': '容器查询成功', 'data': container_info})
 
@@ -452,8 +489,8 @@ def create_experiment(request):
             container_name = 'experiment_' + str(new_experiment.experiment_id)
             print(container_name)
             client = docker.from_env()
-            create_service(client, image, 'test', container_name, 2)
-            url = get_service_url_by_id(client, container_name)
+            # create_service(client, image, 'test', container_name, 2) 这里需要修改！！！！
+            # url = get_service_url_by_id(client, container_name) 这里也是！！！
             print(url)
             new_experiment.experiment_url = url
             new_experiment.save()

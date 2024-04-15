@@ -8,6 +8,8 @@ class Images(models.Model):
     create_time = models.DateTimeField('镜像创建时间', auto_now_add=True)
     update_time = models.DateTimeField('镜像更新时间', auto_now=True)
     author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    cpu_num = models.CharField('CPU数量', max_length=100)
+    mem_size = models.CharField('内存大小', max_length=100)
 
     def __str__(self):
         return str(self.image_id)
@@ -24,6 +26,11 @@ class Container(models.Model):
     create_time = models.DateTimeField('容器创建时间', auto_now_add=True)
     update_time = models.DateTimeField('容器更新时间', auto_now=True)
     author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    cpu_num = models.CharField('CPU数量', max_length=100)
+    mem_size = models.CharField('内存大小', max_length=100)
+    http_port = models.IntegerField('HTTP端口')
+    ssh_port = models.IntegerField('SSH端口')
+
 
     def __str__(self):
         return str(self.container_id)
