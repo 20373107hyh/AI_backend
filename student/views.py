@@ -20,7 +20,7 @@ def get_course_list(request):
             'course_intro': student_course.course_intro,
             'course_aim': student_course.course_aim,
             'course_difficulty': student_course.course_difficulty,
-            'course_chapter': student_course.course_chapter,
+            'course_chapter': student_course.course_chapter.chapter_number,
             'course_limit_time': student_course.course_limit_time,
         }
         courses_info.append(course_info)
@@ -44,7 +44,7 @@ def get_course(request):
         'course_intro': course.course_intro,
         'course_aim': course.course_aim,
         'course_difficulty': course.course_difficulty,
-        'course_chapter': course.course_chapter,
+        'course_chapter': course.course_chapter.chapter_number,
         'course_limit_time': course.course_limit_time,
     }
     return JsonResponse({'errno': 100000, 'msg': '查找课程成功', 'data': data})

@@ -1,12 +1,17 @@
+import random
 import secrets
+import shutil
 import socket
-
+import string
+import tarfile
+from io import BytesIO
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import IntegrityError
+from django.db.models import ProtectedError
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse
 from docker.types import Resources
-
-from teacher.models import Images, Container, Course, Score, Experiment
+from teacher.models import Images, Container, Course, Score, Experiment, Chapter
 from users.models import UserInfo
 from time import sleep
 from django.core.files.storage import default_storage
@@ -32,25 +37,85 @@ def run_container(input_client, image_name):
     return container
 
 
-def create_service(input_client, token, image_name, network_name, service_name, task_num, num_cpu, mem_size, http_port, ssh_port):
-    networks = [network_name]
-    environment = {
-        "JUPYTER_TOKEN": token,
-        'JUPYTER_NOTEBOOK_CONFIG': 'c.NotebookApp.tornado_settings={"headers":{"Content-Security-Policy":"frame-ancestors *"}}',
-    }
-    resources = Resources(mem_limit=mem_size, cpu_limit=num_cpu)
+# def create_service(input_client, image_name, network_name, service_name, task_num, ssh_port, http_port, token, num_cpu, mem_size, from_volume_path, to_volume_path):
+#     networks = [network_name]
+#     password = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(10))
+#     volumes = {
+#         from_volume_path: {'bind': to_volume_path, 'mode': 'rw'},
+#     }
+#     resources = Resources(mem_limit=mem_size, cpu_limit=num_cpu)
+#     service = input_client.services.create(
+#         image_name,
+#         name=service_name,
+#         networks=networks,
+#         mode=docker.types.services.ServiceMode('replicated', replicas=task_num),
+#         endpoint_spec=docker.types.EndpointSpec(ports={8888: http_port}),
+#         resources=resources,
+#     )
+#     print(service.name)
+#     print(service.short_id)
+#     return service
+
+
+
+def create_service(input_client: docker.DockerClient,
+                   image_name: str,
+                   service_name: str,
+                   ssh_port: int,
+                   http_port: int,
+                   token: str,
+                   num_cpu: str,
+                   mem_size: str,
+                   from_volume_path: str,
+                   to_volume_path: str,
+                   network: str,
+                   task_num: int):
+    password = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(10))
+    cpu_limit = int(float(num_cpu) * 100000000)
+    mem_limit = int(mem_size) * 1024 * 1024 * 1024
+    mounts = [
+        docker.types.Mount(target=to_volume_path, source=from_volume_path, type="bind"),
+    ]
+
+    resources = docker.types.Resources(cpu_limit=cpu_limit, mem_limit=mem_limit)
+
+    port_config = docker.types.EndpointSpec(ports={8888: http_port, 22: ssh_port})
+
+    envs = ["JUPYTER_TOKEN=" + token, "ROOT_PASSWORD=" + password]
+
     service = input_client.services.create(
-        image_name,
+        image=image_name,
         name=service_name,
-        networks=networks,
-        mode=docker.types.services.ServiceMode('replicated', replicas=task_num),
-        endpoint_spec=docker.types.EndpointSpec(ports={8888: http_port}),
-        env=environment,
+        command=['/usr/bin/supervisord'],
+        mounts=mounts,
         resources=resources,
+        networks=[network],
+        env=envs,
+        endpoint_spec=port_config,
+        mode=docker.types.ServiceMode("replicated", replicas=task_num)
     )
-    print(service.name)
-    print(service.short_id)
-    return service
+
+    return service, password
+
+
+def create_container(input_client, image_name, container_name, ssh_port, http_port, token, num_cpu, mem_size, from_volume_path, to_volume_path):
+    password = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(10))
+    volumes = {
+        from_volume_path: {'bind': to_volume_path, 'mode': 'rw'},
+    }
+    container = input_client.containers.run(
+        image=image_name,
+        ports={f'8888/tcp': http_port, f'22/tcp': ssh_port},
+        detach=True,
+        name=container_name,
+        command=['/usr/bin/supervisord'],
+        cpu_period=100000,
+        cpu_quota=int(float(num_cpu) * 100000),
+        mem_limit=mem_size,
+        volumes=volumes,
+        environment={"JUPYTER_TOKEN": token, "ROOT_PASSWORD": password},
+    )
+    return container, password
 
 
 def get_url(container):
@@ -90,6 +155,10 @@ def get_service_url_by_id(input_client, service_name, token, http_port):
 #         return 'log error, not found URL'
 
 
+def get_container_url_by_id(input_client, token, http_port):
+    return 'http://127.0.0.1:' + str(http_port) + '/lab?token=' + token
+
+
 def stop_container(container):
     container.stop()
 
@@ -124,9 +193,34 @@ def commit_container(container, image_name):
     return image
 
 
-def commit_container_by_id(input_client, container_id, image_name):
-    container = input_client.containers.get(container_id)
+def find_free_port():
+    while True:
+        port = random.randint(10000, 65536)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            result = sock.connect_ex(('localhost', port))
+            if result != 0:  # 如果端口可用，connect_ex返回错误代码
+                return port
+
+
+def copy_dir(from_path, to_path):
+    if os.path.exists(to_path):
+        print(1)
+        shutil.rmtree(to_path)
+    print('1:', from_path, to_path)
+    shutil.copytree(from_path, to_path)
+
+
+def commit_container_by_id(input_client, container_name, image_name, from_path, to_path):
+    # put_archive_to_container(from_path, to_path, container_id)
+    container = input_client.containers.get(container_name)
     image = container.commit(repository=image_name)
+    dir_name = 'image_' + image_name
+    image_dir = './images/' + dir_name
+    os.makedirs(image_dir, exist_ok=True)
+    origin_dir = './images/container_' + container_name
+    print(from_path, image_dir)
+    copy_dir(from_path, image_dir)
+    # os.rename(origin_dir, image_dir)
     return image
 
 
@@ -147,39 +241,90 @@ def get_filenames_in_folder(folder_path):
     return filenames
 
 
+def get_runtime_workdir(image_name):
+    client = docker.from_env()
+    command = 'pwd'
+    response = client.containers.run(image_name, command, remove=True)
+    return response.decode('utf-8').strip()
+
+
+def create_tar_stream(from_path):
+    # Create a tarfile object in memory
+    fileobj = BytesIO()
+    tar = tarfile.TarFile(fileobj=fileobj, mode='w')
+
+    for root, dirs, files in os.walk(from_path):
+        # Ignore directories starting with .
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for file in files:
+            full_path = os.path.join(root, file)
+            relative_path = os.path.relpath(full_path, from_path)
+            new_path = os.path.join('work', relative_path)
+            tar.add(full_path, arcname=new_path)
+    tar.close()
+
+    # Set the file pointer to the start of the file
+    fileobj.seek(0)
+    return fileobj
+
+
+def put_archive_to_container(from_path, to_path, container_name):
+    client = docker.from_env()
+    container = client.containers.get(container_name)  # Your container name
+
+    stream = create_tar_stream(from_path)
+    container.put_archive(to_path, stream)
+
+
 @csrf_exempt
 def upload_file(request):
     files = request.FILES.getlist('file[]')
     user_id = request.POST.get('user_id')
-    container_id = request.POST.get('container_id')
+    container_name = request.POST.get('container_name')
+    path = request.POST.get('path')
     print("upload")
-    print(user_id, container_id,files)
+    print(user_id, container_name, files, path)
     for file in files:
-        save_path = 'users_{}/container_{}/{}'.format(user_id, container_id, file.name)
+        if path is None:
+            save_path = 'users_{}/container_{}/{}'.format(user_id, container_name, file.name)
+        else:
+            save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, file.name)
         print(save_path)
         default_storage.save(save_path, ContentFile(file.read()))
     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
 
 
+def list_files(startpath):
+    file_list = []
+    for root, dirs, files in os.walk(startpath):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for f in files:
+            relative_path = os.path.join(root, f)
+            file_dict = {'filename': f, 'path': relative_path.replace(startpath, '').replace('\\', '/').lstrip('/')}
+            file_list.append(file_dict)
+    return file_list
+
+
 @csrf_exempt
 def load_files(request):
     user_id = request.POST.get('user_id')
-    container_id = request.POST.get('container_id')
+    container_name = request.POST.get('container_name')
     print("load")
-    print(user_id, container_id)
-    dir_path = "users_" + str(user_id) + "/container_" + str(container_id)
+    print(user_id, container_name)
+    dir_path = "users_" + str(user_id) + "/container_" + str(container_name)
     os.makedirs(dir_path, exist_ok=True)
-    files = get_filenames_in_folder(dir_path)
+    files = list_files(dir_path)
     return JsonResponse({'errno': 100000, 'msg': '文件查找成功', 'data': files})
 
 
 @csrf_exempt
 def delete_file(request):
     user_id = request.POST.get('user_id')
-    container_id = request.POST.get('container_id')
-    file_name = request.POST.get('file_name')
-    dir_path = "users_" + str(user_id) + "/container_" + str(container_id)
-    file_path = dir_path + "/" + file_name
+    container_name = request.POST.get('container_name')
+    file_path = request.POST.get('file_path')
+    dir_path = "users_" + str(user_id) + "/container_" + str(container_name)
+    file_path = dir_path + "/" + file_path
+    print(file_path)
     try:
         os.remove(file_path)
         return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
@@ -222,13 +367,24 @@ def add_new_container(request):
     container_name = request.POST.get('container_name')
     author_id = request.POST.get('author_id')
     config = request.POST.get('config')
-    print(config)
     match = re.search(r'(\d+)核CPU (\d+)G内存', config)
     num_cpu, mem_size = match.groups()
-    num_cpu_m = int(float(num_cpu) * 10 ** 9)
-    mem_size_m = int(mem_size) * 1024 * 1024 * 1024
+    mem_size_g = mem_size + 'g'
+    workdir = get_runtime_workdir(image_name)
+    # volume_dir = workdir + '/work'
+    current_dir = os.getcwd()
+    user_file_dir = 'users_' + author_id
+    local_file_dir = 'users_' + author_id + '\\container_' + container_name
+    user_dir = os.path.join(current_dir, user_file_dir)
+    local_dir = os.path.join(current_dir, local_file_dir)
+    image_dir = 'images\\image_' + image_name.split(':')[0]
+    image_dir = os.path.join(current_dir, image_dir)
+    copy_dir(image_dir, local_dir)
+    print(image_dir, local_dir)
+    copied_dir = os.path.join(user_dir, 'image_' + image_name.split(':')[0])
+    # os.rename(copied_dir, local_dir)
+    # os.makedirs(local_dir, exist_ok=True)
     author = UserInfo.objects.get(user_id=author_id)
-    network_name = 'test'
     token = secrets.token_hex(16)
     ports = set()
     while len(ports) < 2:
@@ -236,27 +392,21 @@ def add_new_container(request):
         ports.add(port)
 
     ssh_port, http_port = ports
-    # author = info['author']
-    # author = UserInfo.objects.filter(realname=author).first()
-    # if author is not None:
-    #     author_id = author.id
-    # else:
-    #     return JsonResponse({'errno': 100002, 'msg': '作者不存在'})
     client = docker.from_env()
     print(container_name)
-    container = create_service(
-        client,
-        token,
-        image_name,
-        network_name,
-        container_name,
-        1,
-        num_cpu_m,
-        mem_size_m,
-        http_port,
-        ssh_port
+    container, password = create_container(
+        input_client=client,
+        image_name=image_name,
+        container_name=container_name,
+        ssh_port=ssh_port,
+        http_port=http_port,
+        num_cpu=num_cpu,
+        mem_size=mem_size_g,
+        token=token,
+        from_volume_path=local_dir,
+        to_volume_path=workdir
     )
-    url = get_service_url_by_id(client, container_name, token, http_port)
+    url = get_container_url_by_id(client, token, http_port)
     new_container = Container()
     new_container.container_id = container.short_id
     new_container.author_id = author
@@ -266,6 +416,8 @@ def add_new_container(request):
     new_container.mem_size = mem_size
     new_container.ssh_port = ssh_port
     new_container.http_port = http_port
+    new_container.ssh_password = password
+    new_container.base_image = image_name
     new_container.save()
     print(url)
     return JsonResponse({'errno': 100000, 'msg': '容器创建成功'})
@@ -282,22 +434,56 @@ def add_new_container(request):
     #     return JsonResponse({'errno': 100003, 'msg': '容器创建失败'})
 
 
+
+def delete_file_in_container(container_name, file_path):
+    client = docker.from_env()
+
+    # Get the container
+    container = client.containers.get(container_name)
+
+    # Execute rm command
+    exit_code, output = container.exec_run(f'rm -rf {file_path}')
+
+    if exit_code == 0:
+        print(f'Successfully deleted {file_path} in {container_name}')
+    else:
+        print(f'Failed to delete {file_path} in {container_name}. Output: {output}')
+
+
 @csrf_exempt
-def add_new_image(request):
+def add_new_image(request):  # 修改
     container_name = request.POST.get('container_name')
     new_image_name = request.POST.get('new_image_name')
     client = docker.from_env()
-    commit_container_in_service(client, container_name, new_image_name)
+    container = Container.objects.filter(container_name=container_name).first()
+    local_container = client.containers.get(container_name)
+    workdir = local_container.attrs['Config']['WorkingDir']
+    author_id = container.author_id.user_id
+    current_dir = os.getcwd()
+    local_file_dir = 'users_' + str(author_id) + '\\container_' + container_name
+    from_path = os.path.join(current_dir, local_file_dir)
+    to_path = workdir
+    image = commit_container_by_id(client, container_name, new_image_name, from_path, to_path)
+    new_image = Images(
+        image_id=image.id,
+        image_name=new_image_name,
+        author_id=container.author_id.user_id,
+        cpu_num=container.cpu_num,
+        mem_size=container.mem_size,
+    )
+    new_image.save()
     return JsonResponse({'errno': 100000, 'msg': '新镜像创建成功'})
-
 
 
 @csrf_exempt
 def delete_container(request):
     container_name = request.POST.get('container_name')
+    author_id = request.POST.get('author_id')
     client = docker.from_env()
     container = Container.objects.filter(container_name=container_name).first()
-    remove_service_by_id(client, container_name)
+    remove_container_by_id(client, container_name)
+    container_path = './users_' + author_id + '/container_' + container_name
+    shutil.rmtree(container_path)
     container.delete()
     return JsonResponse({'errno': 100000, 'msg': '容器删除成功'})
     # container = Container.objects.filter(container_name=container_name).first()
@@ -313,9 +499,13 @@ def delete_container(request):
 @csrf_exempt
 def delete_image(request):
     image_name = request.POST.get('image_name')
+    image = Images.objects.get(image_name=image_name)
+    image_path = "./images/image_" + image_name
     client = docker.from_env()
     try:
+        image.delete()
         client.images.remove(image_name)
+        shutil.rmtree(image_path)
         return JsonResponse({'errno': 100000, 'msg': '镜像删除成功'})
     except APIError as e:
         if 'image is being used by stopped container' in str(e):
@@ -324,30 +514,32 @@ def delete_image(request):
             return JsonResponse({'errno': 100000, 'msg': '镜像删除失败，发生未知错误'})
 
 
-
-@csrf_exempt
-def stop_container(request):
-    container_name = request.POST.get('container_name')
-    client = docker.from_env()
-    stop_container_by_id(client, container_name)
-    container_in_DB = Container.objects.filter(container_name=container_name).first()
-    container = client.containers.get(container_name)
-    container_in_DB.container_status = container.status
-    container_in_DB.save()
-    return JsonResponse({'errno': 100000, 'msg': '容器停止运行成功'})
-    # container = Container.objects.filter(container_name=container_name).first()
-    # if container:
-    #     client = docker.from_env()
-    #     stop_container_by_id(client, container.container_id)
-    #     return JsonResponse({'errno': 100000, 'msg': '容器停止运行成功'})
-    # else:
-    #     return JsonResponse({'errno': 100002, 'msg': '容器不存在'})
+# @csrf_exempt
+# def stop_container(request):
+#     container_name = request.POST.get('container_name')
+#     client = docker.from_env()
+#     stop_container_by_id(client, container_name)
+#     container_in_DB = Container.objects.filter(container_name=container_name).first()
+#     container = client.containers.get(container_name)
+#     container_in_DB.container_status = container.status
+#     container_in_DB.save()
+#     return JsonResponse({'errno': 100000, 'msg': '容器停止运行成功'})
+#     # container = Container.objects.filter(container_name=container_name).first()
+#     # if container:
+#     #     client = docker.from_env()
+#     #     stop_container_by_id(client, container.container_id)
+#     #     return JsonResponse({'errno': 100000, 'msg': '容器停止运行成功'})
+#     # else:
+#     #     return JsonResponse({'errno': 100002, 'msg': '容器不存在'})
 
 
 @csrf_exempt
 def search_container(request):
     container_id = request.POST.get('container_id')
     container = Container.objects.filter(container_id=container_id).first()
+    client = docker.from_env()
+    local_container = client.containers.get(container_id)
+    workdir = local_container.attrs['Config']['WorkingDir']
     container_info = {
         'container_id': container.container_id,
         'container_name': container.container_name,
@@ -357,24 +549,26 @@ def search_container(request):
         'mem_size': container.mem_size,
         'http_port': container.http_port,
         'ssh_port': container.ssh_port,
+        'workdir': workdir,
+        'ssh_password': container.ssh_password,
     }
     return JsonResponse({'errno': 100000, 'msg': '容器查询成功', 'data': container_info})
 
 
-@csrf_exempt
-def start_container(request):
-    container_name = request.POST.get('container_name')
-    print(container_name)
-    client = docker.from_env()
-    start_container_by_id(client, container_name)
-    container = client.containers.get(container_name)
-    url = get_url(container)
-    container_in_DB = Container.objects.filter(container_name=container_name).first()
-    container = client.containers.get(container_name)
-    container_in_DB.container_status = container.status
-    container_in_DB.container_url = url
-    container_in_DB.save()
-    return JsonResponse({'errno': 100000, 'msg': '容器开始运行成功'})
+# @csrf_exempt
+# def start_container(request):
+#     container_name = request.POST.get('container_name')
+#     print(container_name)
+#     client = docker.from_env()
+#     start_container_by_id(client, container_name)
+#     container = client.containers.get(container_name)
+#     url = get_url(container)
+#     container_in_DB = Container.objects.filter(container_name=container_name).first()
+#     container = client.containers.get(container_name)
+#     container_in_DB.container_status = container.status
+#     container_in_DB.container_url = url
+#     container_in_DB.save()
+#     return JsonResponse({'errno': 100000, 'msg': '容器开始运行成功'})
     # container = Container.objects.filter(container_name=container_name).first()
     # if container:
     #     client = docker.from_env()
@@ -395,6 +589,7 @@ def create_course(request):
     course_limit_time = request.POST.get('course_limit_time')
     course_difficulty = request.POST.get('course_difficulty')
     course_chapter = request.POST.get('course_chapter')
+    chapter = Chapter.objects.get(chapter_number=course_chapter)
     new_course = Course(
         course_name=course_name,
         course_intro=course_intro,
@@ -402,7 +597,7 @@ def create_course(request):
         use_image_name=use_image_name,
         course_limit_time=course_limit_time,
         course_difficulty=course_difficulty,
-        course_chapter=course_chapter,
+        course_chapter=chapter,
         author_id=author,
     )
     new_course.save()
@@ -422,7 +617,8 @@ def list_course(request):
         "use_image_name": course.use_image_name,
         "course_limit_time": course.course_limit_time,
         "course_difficulty": course.course_difficulty,
-        "course_chapter": course.course_chapter,
+        "course_chapter": course.course_chapter.chapter_number,
+        "chapter_name": course.course_chapter.chapter_name,
     } for course in course_list]
     return JsonResponse({'errno': 100000, 'msg': '课程查询成功', 'data': course_list_json})
 
@@ -442,6 +638,8 @@ def delete_course(request):
 def get_course_info(request):
     course_id = request.POST.get('course_id')
     course = Course.objects.get(course_id=course_id)
+    image_name = course.use_image_name
+    image = Images.objects.get(image_name=image_name)
     if course:
         course_json = {
             "course_id": course.course_id,
@@ -452,11 +650,55 @@ def get_course_info(request):
             "use_image_name": course.use_image_name,
             "course_limit_time": course.course_limit_time,
             "course_difficulty": course.course_difficulty,
-            "course_chapter": course.course_chapter,
+            "course_chapter": course.course_chapter.chapter_number,
+            "chapter_name": course.course_chapter.chapter_name,
+            "cpu_num": image.cpu_num,
+            "mem_size": image.mem_size
         }
         return JsonResponse({'errno': 100000, 'msg': '课程查询成功', 'data': course_json})
     else:
         return JsonResponse({'errno': 100001, 'msg': '未找到课程'})
+
+
+@csrf_exempt
+def list_chapter(request):
+    chapters = Chapter.objects.all().order_by('chapter_number')
+    chapter_list = list(chapters)
+    chapter_json = [{
+        'chapter_num': chapter.chapter_number,
+        'chapter_name': chapter.chapter_name,
+    }for chapter in chapter_list]
+    return JsonResponse({'errno': 100000, 'msg': '章节查询成功', 'data': chapter_json})
+
+
+@csrf_exempt
+def add_chapter(request):
+    chapter_num = request.POST.get('chapter_num')
+    chapter_name = request.POST.get('chapter_name')
+    new_chapter = Chapter(
+        chapter_number=chapter_num,
+        chapter_name=chapter_name,
+    )
+    try:
+        new_chapter.save()
+        return JsonResponse({'errno': 100000, 'msg': '章节添加成功'})
+    except IntegrityError:
+        return JsonResponse({'errno': 100001, 'msg': '章节添加失败，章节号重复'}, status=400)
+
+
+@csrf_exempt
+def delete_chapter(request):
+    chapter_num = request.POST.get('chapter_num')
+    try:
+        chapter = Chapter.objects.get(chapter_number=chapter_num)
+        chapter.delete()
+        return JsonResponse({'errno': 100000, 'msg': '章节删除成功'})
+    except Chapter.DoesNotExist:
+        return JsonResponse({'errno': 100001, 'msg': '章节不存在'}, status=404)
+    except ProtectedError:
+        return JsonResponse({'errno': 100002, 'msg': '章节删除失败，有关联课程'},
+                            status=400)
+
 
 
 @csrf_exempt
@@ -465,6 +707,9 @@ def create_experiment(request):
     user_id = request.POST.get('user_id')
     user = UserInfo.objects.get(user_id=user_id)
     course = Course.objects.get(course_id=course_id)
+    image = Images.objects.get(image_name=course.use_image_name)
+    num_cpu = image.cpu_num
+    mem_size = image.mem_size
     if course:
         if Experiment.objects.filter(user_id=user_id, course_id=course_id).exists():
             experiment = Experiment.objects.get(user_id=user_id, course_id=course_id)
@@ -487,18 +732,54 @@ def create_experiment(request):
             )
             new_experiment.save()
             container_name = 'experiment_' + str(new_experiment.experiment_id)
-            print(container_name)
+            print('container_name', container_name)
             client = docker.from_env()
-            # create_service(client, image, 'test', container_name, 2) 这里需要修改！！！！
+            print(num_cpu, 'config', mem_size)
+            mem_size_g = mem_size + 'g'
+            workdir = get_runtime_workdir(image)
+            # volume_dir = workdir + '/work'
+            current_dir = os.getcwd()
+            user_file_dir = 'users_' + user_id
+            local_file_dir = 'users_' + user_id + '\\container_' + container_name
+            user_dir = os.path.join(current_dir, user_file_dir)
+            local_dir = os.path.join(current_dir, local_file_dir)
+            image_dir = 'images\\image_' + image.split(':')[0]
+            image_dir = os.path.join(current_dir, image_dir)
+            copy_dir(image_dir, local_dir)
+            token = secrets.token_hex(16)
+            ports = set()
+            while len(ports) < 2:
+                port = get_free_port()
+                ports.add(port)
+
+            ssh_port, http_port = ports
+            client = docker.from_env()
+            service, password = create_service(
+                input_client=client,
+                image_name=image,
+                service_name=container_name,
+                ssh_port=ssh_port,
+                http_port=http_port,
+                token=token,
+                num_cpu=num_cpu,
+                mem_size=mem_size,
+                from_volume_path=local_dir,
+                to_volume_path=workdir,
+                network='test',
+                task_num=1,
+            )
             # url = get_service_url_by_id(client, container_name) 这里也是！！！
-            print(url)
+            url = get_container_url_by_id(client, token, http_port)
+            print('url', url)
             new_experiment.experiment_url = url
+            new_experiment.experiment_password = password
             new_experiment.save()
             data = {
                 'experiment_id': new_experiment.experiment_id,
                 'experiment_course': new_experiment.course.course_id,
                 'experiment_url': new_experiment.experiment_url,
                 'experiment_countdown': new_experiment.experiment_countdown,
+                'experiment_password': new_experiment.experiment_password
             }
             return JsonResponse({'errno': 100000, 'msg': '实验创建成功', 'data': data})
     else:
@@ -517,7 +798,10 @@ def delete_experiment(request):
         return JsonResponse({'errno': 100001, 'msg': '实验不存在，删除失败'})
 
     remove_service_by_id(client, container_name)
+    container_path = './users_' + str(experiment.user_id.user_id) + '/container_experiment_' + experiment_id
+    shutil.rmtree(container_path)
     experiment.delete()
+
     return JsonResponse({'errno': 100000, 'msg': '实验删除成功'})
 
 

@@ -26,10 +26,12 @@ class Container(models.Model):
     create_time = models.DateTimeField('容器创建时间', auto_now_add=True)
     update_time = models.DateTimeField('容器更新时间', auto_now=True)
     author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    base_image = models.CharField('基于镜像', max_length=100)
     cpu_num = models.CharField('CPU数量', max_length=100)
     mem_size = models.CharField('内存大小', max_length=100)
     http_port = models.IntegerField('HTTP端口')
     ssh_port = models.IntegerField('SSH端口')
+    ssh_password = models.CharField('SSH密码', max_length=100)
 
 
     def __str__(self):
@@ -40,16 +42,21 @@ class Container(models.Model):
         verbose_name_plural = verbose_name
 
 
+class Chapter(models.Model):
+    chapter_number = models.IntegerField('章节编号', primary_key=True)
+    chapter_name = models.CharField('章节名词', max_length=100)
+
+
 class Course(models.Model):
     course_id = models.AutoField('课程ID', primary_key=True)
-    author_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    author_id = models.ForeignKey(UserInfo, on_delete=models.PROTECT)
     use_image_name = models.CharField('使用镜像名', max_length=100)
     course_name = models.CharField('课程名称', max_length=100)
     course_intro = models.CharField('课程简介', max_length=1000)
     course_aim = models.CharField("课程目标", max_length=1000)
     course_limit_time = models.IntegerField('课程限时', default=0)
     course_difficulty = models.CharField('课程难度', max_length=100)
-    course_chapter = models.IntegerField('课程章节')
+    course_chapter = models.ForeignKey(Chapter, on_delete=models.PROTECT)
     create_time = models.DateTimeField('课程创建时间', auto_now_add=True)
     update_time = models.DateTimeField('课程更新时间', auto_now=True)
 
@@ -80,6 +87,7 @@ class Experiment(models.Model):
     course = models.ForeignKey(Course, on_delete=models.CASCADE)
     experiment_countdown = models.IntegerField('实验倒计时')
     experiment_url = models.URLField('实验url')
+    experiment_password = models.CharField('ssh密码', max_length=100)
     create_time = models.DateTimeField('实验创建时间', auto_now_add=True)
     update_time = models.DateTimeField('实验更新时间', auto_now=True)
 
