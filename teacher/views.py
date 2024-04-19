@@ -467,7 +467,7 @@ def add_new_image(request):  # 修改
     new_image = Images(
         image_id=image.id,
         image_name=new_image_name,
-        author_id=container.author_id.user_id,
+        author_id=container.author_id,
         cpu_num=container.cpu_num,
         mem_size=container.mem_size,
     )
