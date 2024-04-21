@@ -276,19 +276,38 @@ def put_archive_to_container(from_path, to_path, container_name):
     container.put_archive(to_path, stream)
 
 
+# @csrf_exempt
+# def upload_file(request):
+#     files = request.FILES.getlist('file[]')
+#     user_id = request.POST.get('user_id')
+#     container_name = request.POST.get('container_name')
+#     path = request.POST.get('path')
+#     print("upload")
+#     print(user_id, container_name, files, path)
+#     for file in files:
+#         if path is None:
+#             save_path = 'users_{}/container_{}/{}'.format(user_id, container_name, file.name)
+#         else:
+#             save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, file.name)
+#         print(save_path)
+#         default_storage.save(save_path, ContentFile(file.read()))
+#     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
 @csrf_exempt
 def upload_file(request):
     files = request.FILES.getlist('file[]')
+    paths = request.POST.getlist('path[]')  # 文件的相对路径列表
     user_id = request.POST.get('user_id')
     container_name = request.POST.get('container_name')
     path = request.POST.get('path')
     print("upload")
     print(user_id, container_name, files, path)
-    for file in files:
+    for file, relative_path in zip(files, paths):
         if path is None:
-            save_path = 'users_{}/container_{}/{}'.format(user_id, container_name, file.name)
+            save_path = 'users_{}/container_{}/{}'.format(user_id, container_name, relative_path)
         else:
-            save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, file.name)
+            save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, relative_path)
         print(save_path)
         default_storage.save(save_path, ContentFile(file.read()))
     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
@@ -317,19 +336,34 @@ def load_files(request):
     return JsonResponse({'errno': 100000, 'msg': '文件查找成功', 'data': files})
 
 
+# @csrf_exempt
+# def delete_file(request):
+#     user_id = request.POST.get('user_id')
+#     container_name = request.POST.get('container_name')
+#     file_path = request.POST.get('file_path')
+#     dir_path = "users_" + str(user_id) + "/container_" + str(container_name)
+#     file_path = dir_path + "/" + file_path
+#     print(file_path)
+#     try:
+#         os.remove(file_path)
+#         return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
+#     except OSError as e:
+#         return JsonResponse({'errno': 100001, 'msg': e.strerror})
+
+
 @csrf_exempt
 def delete_file(request):
     user_id = request.POST.get('user_id')
     container_name = request.POST.get('container_name')
-    file_path = request.POST.get('file_path')
+    file_paths = json.loads(request.POST['file_paths'])   # getlist 用来获取一个列表
     dir_path = "users_" + str(user_id) + "/container_" + str(container_name)
-    file_path = dir_path + "/" + file_path
-    print(file_path)
-    try:
-        os.remove(file_path)
-        return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
-    except OSError as e:
-        return JsonResponse({'errno': 100001, 'msg': e.strerror})
+    for file_path in file_paths:    # 循环删除每个文件
+        file_path = dir_path + "/" + file_path
+        try:
+            os.remove(file_path)
+        except OSError as e:
+            return JsonResponse({'errno': 100001, 'msg': e.strerror})
+    return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
 
 
 @csrf_exempt
@@ -466,7 +500,7 @@ def add_new_image(request):  # 修改
     image = commit_container_by_id(client, container_name, new_image_name, from_path, to_path)
     new_image = Images(
         image_id=image.id,
-        image_name=new_image_name,
+        image_name=image.tags[0],
         author_id=container.author_id,
         cpu_num=container.cpu_num,
         mem_size=container.mem_size,
@@ -639,6 +673,7 @@ def get_course_info(request):
     course_id = request.POST.get('course_id')
     course = Course.objects.get(course_id=course_id)
     image_name = course.use_image_name
+    print(image_name)
     image = Images.objects.get(image_name=image_name)
     if course:
         course_json = {
@@ -754,19 +789,31 @@ def create_experiment(request):
 
             ssh_port, http_port = ports
             client = docker.from_env()
-            service, password = create_service(
+            # service, password = create_service(
+            #     input_client=client,
+            #     image_name=image,
+            #     service_name=container_name,
+            #     ssh_port=ssh_port,
+            #     http_port=http_port,
+            #     token=token,
+            #     num_cpu=num_cpu,
+            #     mem_size=mem_size,
+            #     from_volume_path=local_dir,
+            #     to_volume_path=workdir,
+            #     network='test',
+            #     task_num=1,
+            # )
+            container, password = create_container(
                 input_client=client,
                 image_name=image,
-                service_name=container_name,
+                container_name=container_name,
                 ssh_port=ssh_port,
                 http_port=http_port,
-                token=token,
                 num_cpu=num_cpu,
-                mem_size=mem_size,
+                mem_size=mem_size_g,
+                token=token,
                 from_volume_path=local_dir,
-                to_volume_path=workdir,
-                network='test',
-                task_num=1,
+                to_volume_path=workdir
             )
             # url = get_service_url_by_id(client, container_name) 这里也是！！！
             url = get_container_url_by_id(client, token, http_port)
