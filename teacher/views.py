@@ -99,10 +99,10 @@ def create_service(input_client: docker.DockerClient,
     return service, password
 
 
-def update_service_by_id(input_client: docker.DockerClient, service_id):
+def update_service(input_client: docker.DockerClient, service_id: str):
     # Generate a Docker API client.
     api_client = input_client.api
-    print(service_id)
+
     # Get the service's current configuration.
     current_service = api_client.inspect_service(service_id)
 
@@ -887,33 +887,33 @@ def create_experiment(request):
 
             ssh_port, http_port = ports
             client = docker.from_env()
-            service, password = create_service(
-                input_client=client,
-                image_name=image,
-                service_name=container_name,
-                ssh_port=ssh_port,
-                http_port=http_port,
-                token=token,
-                num_cpu=num_cpu,
-                mem_size=mem_size,
-                from_volume_path=local_dir,
-                to_volume_path=workdir,
-                network_name=network_name,
-                task_num=1,
-            )
-            # update_service_by_id(client, service.id)  //need to update!!!
-            # container, password = create_container(
+            # service, password = create_service(
             #     input_client=client,
             #     image_name=image,
-            #     container_name=container_name,
+            #     service_name=container_name,
             #     ssh_port=ssh_port,
             #     http_port=http_port,
-            #     num_cpu=num_cpu,
-            #     mem_size=mem_size_g,
             #     token=token,
+            #     num_cpu=num_cpu,
+            #     mem_size=mem_size,
             #     from_volume_path=local_dir,
-            #     to_volume_path=workdir
+            #     to_volume_path=workdir,
+            #     network_name=network_name,
+            #     task_num=1,
             # )
+            # update_service(client, service.id)
+            container, password = create_container(
+                input_client=client,
+                image_name=image,
+                container_name=container_name,
+                ssh_port=ssh_port,
+                http_port=http_port,
+                num_cpu=num_cpu,
+                mem_size=mem_size_g,
+                token=token,
+                from_volume_path=local_dir,
+                to_volume_path=workdir
+            )
             # url = get_service_url_by_id(client, container_name) 这里也是！！！
             url = get_container_url_by_id(client, token, http_port)
             print('url', url)
@@ -943,7 +943,7 @@ def delete_experiment(request):
     except ObjectDoesNotExist:
         return JsonResponse({'errno': 100001, 'msg': '实验不存在，删除失败'})
 
-    remove_service_by_id(client, container_name)
+    remove_container_by_id(client, container_name)
     container_path = './users_' + str(experiment.user_id.user_id) + '/container_experiment_' + experiment_id
     shutil.rmtree(container_path)
     experiment.delete()
