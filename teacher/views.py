@@ -1,3 +1,4 @@
+import io
 import random
 import secrets
 import shutil
@@ -68,7 +69,7 @@ def create_service(input_client: docker.DockerClient,
                    mem_size: str,
                    from_volume_path: str,
                    to_volume_path: str,
-                   network: str,
+                   network_name: str,
                    task_num: int):
     password = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(10))
     cpu_limit = int(float(num_cpu) * 100000000)
@@ -76,7 +77,7 @@ def create_service(input_client: docker.DockerClient,
     mounts = [
         docker.types.Mount(target=to_volume_path, source=from_volume_path, type="bind"),
     ]
-
+    network = input_client.networks.create(network_name, driver="overlay")
     resources = docker.types.Resources(cpu_limit=cpu_limit, mem_limit=mem_limit)
 
     port_config = docker.types.EndpointSpec(ports={8888: http_port, 22: ssh_port})
@@ -89,13 +90,27 @@ def create_service(input_client: docker.DockerClient,
         command=['/usr/bin/supervisord'],
         mounts=mounts,
         resources=resources,
-        networks=[network],
+        networks=[network_name],
         env=envs,
         endpoint_spec=port_config,
         mode=docker.types.ServiceMode("replicated", replicas=task_num)
     )
 
     return service, password
+
+
+def update_service_by_id(input_client: docker.DockerClient, service_id):
+    # Generate a Docker API client.
+    api_client = input_client.api
+    print(service_id)
+    # Get the service's current configuration.
+    current_service = api_client.inspect_service(service_id)
+
+    # Set the endpoint mode to dnsrr in the service configuration.
+    current_service["Spec"]["EndpointSpec"]["Mode"] = "dnsrr"
+
+    # Update the service with the new configuration.
+    api_client.update_service(service_id, current_service["Spec"])
 
 
 def create_container(input_client, image_name, container_name, ssh_port, http_port, token, num_cpu, mem_size, from_volume_path, to_volume_path):
@@ -294,22 +309,104 @@ def put_archive_to_container(from_path, to_path, container_name):
 #     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
 
 
+# @csrf_exempt
+# def upload_file(request):
+#     files = request.FILES.getlist('file[]')
+#     paths = request.POST.getlist('path[]')  # 文件的相对路径列表
+#     user_id = request.POST.get('user_id')
+#     container_name = request.POST.get('container_name')
+#     path = request.POST.get('path')
+#     print("upload")
+#     print(user_id, container_name, files, path)
+#     for file, relative_path in zip(files, paths):
+#         if path is None:
+#             save_path = 'users_{}/container_{}/{}'.format(user_id, container_name, relative_path)
+#         else:
+#             save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, relative_path)
+#         print(save_path)
+#         default_storage.save(save_path, ContentFile(file.read()))
+#     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+# @csrf_exempt
+# def upload_file(request):
+#     tar_file = request.FILES.get('tarFile')  # get tar file
+#     user_id = request.POST.get('user_id')
+#     container_name = request.POST.get('container_name')
+#     path = request.POST.get('path')
+#     print(user_id, container_name, path)
+#     # Convert the uploaded file to BytesIO
+#     tar_file_IO_content = io.BytesIO(tar_file.read())
+#
+#     # Below line handle corrupted tar file and throws Exception
+#     tar = tarfile.open(fileobj=tar_file_IO_content)
+#
+#     # Process tar members
+#     for member in tar:
+#         if member.isfile():
+#             file_content = tar.extractfile(member).read()
+#             save_directory = f'users_{user_id}/container_{container_name}/{path}/{os.path.dirname(member.name)}'
+#             if not os.path.exists(save_directory):
+#                 os.makedirs(save_directory)
+#             save_path = f'{save_directory}/{os.path.basename(member.name)}'
+#             default_storage.save(save_path, ContentFile(file_content))
+#
+#     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
 @csrf_exempt
 def upload_file(request):
-    files = request.FILES.getlist('file[]')
-    paths = request.POST.getlist('path[]')  # 文件的相对路径列表
+    tar_file = request.FILES.get('tarFile')  # get tar file
     user_id = request.POST.get('user_id')
     container_name = request.POST.get('container_name')
     path = request.POST.get('path')
-    print("upload")
-    print(user_id, container_name, files, path)
-    for file, relative_path in zip(files, paths):
-        if path is None:
-            save_path = 'users_{}/container_{}/{}'.format(user_id, container_name, relative_path)
-        else:
-            save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, relative_path)
-        print(save_path)
-        default_storage.save(save_path, ContentFile(file.read()))
+
+    if tar_file is not None:  # tar file exists, process as before
+        # Convert the uploaded file to BytesIO
+        tar_file_IO_content = io.BytesIO(tar_file.read())
+
+        # Below line handle corrupted tar file and throws Exception
+        tar = tarfile.open(fileobj=tar_file_IO_content)
+
+        # Process tar members
+        for member in tar:
+            if member.isfile():
+                file_content = tar.extractfile(member).read()
+                save_directory = f'users_{user_id}/container_{container_name}/{path}/{os.path.dirname(member.name)}'
+                if not os.path.exists(save_directory):
+                    os.makedirs(save_directory)
+                save_path = f'{save_directory}/{os.path.basename(member.name)}'
+                default_storage.save(save_path, ContentFile(file_content))
+    else:  # No tar file, process single file or multiple files
+        files = request.FILES.getlist('files[]')  # get files
+        for file in files:
+            # Convert the uploaded file to BytesIO
+            file_IO_content = io.BytesIO(file.read())
+
+            save_directory = f'users_{user_id}/container_{container_name}/{path}'
+            if not os.path.exists(save_directory):
+                os.makedirs(save_directory)
+            save_path = f'{save_directory}/{file.name}'
+            default_storage.save(save_path, ContentFile(file_IO_content.getvalue()))
+
+    return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+@csrf_exempt
+def upload_tar_file(request):
+    tar_file = request.FILES['file']
+    user_id = request.POST.get('user_id')
+    container_name = request.POST.get('container_name')
+    path = request.POST.get('path')
+    tar_content = ContentFile(tar_file.read())
+
+    with tarfile.open(fileobj=tar_content) as tar:
+        for member in tar.getmembers():
+            if member.is_file():
+                file = tar.extractfile(member)
+                save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, member.name)
+                default_storage.save(save_path, ContentFile(file.read()))
+
     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
 
 
@@ -408,10 +505,10 @@ def add_new_container(request):
     # volume_dir = workdir + '/work'
     current_dir = os.getcwd()
     user_file_dir = 'users_' + author_id
-    local_file_dir = 'users_' + author_id + '\\container_' + container_name
+    local_file_dir = 'users_' + author_id + '/container_' + container_name
     user_dir = os.path.join(current_dir, user_file_dir)
     local_dir = os.path.join(current_dir, local_file_dir)
-    image_dir = 'images\\image_' + image_name.split(':')[0]
+    image_dir = 'images/image_' + image_name.split(':')[0]
     image_dir = os.path.join(current_dir, image_dir)
     copy_dir(image_dir, local_dir)
     print(image_dir, local_dir)
@@ -494,7 +591,7 @@ def add_new_image(request):  # 修改
     workdir = local_container.attrs['Config']['WorkingDir']
     author_id = container.author_id.user_id
     current_dir = os.getcwd()
-    local_file_dir = 'users_' + str(author_id) + '\\container_' + container_name
+    local_file_dir = 'users_' + str(author_id) + '/container_' + container_name
     from_path = os.path.join(current_dir, local_file_dir)
     to_path = workdir
     image = commit_container_by_id(client, container_name, new_image_name, from_path, to_path)
@@ -767,6 +864,7 @@ def create_experiment(request):
             )
             new_experiment.save()
             container_name = 'experiment_' + str(new_experiment.experiment_id)
+            network_name = 'experiment_' + str(new_experiment.experiment_id)
             print('container_name', container_name)
             client = docker.from_env()
             print(num_cpu, 'config', mem_size)
@@ -775,10 +873,10 @@ def create_experiment(request):
             # volume_dir = workdir + '/work'
             current_dir = os.getcwd()
             user_file_dir = 'users_' + user_id
-            local_file_dir = 'users_' + user_id + '\\container_' + container_name
+            local_file_dir = 'users_' + user_id + '/container_' + container_name
             user_dir = os.path.join(current_dir, user_file_dir)
             local_dir = os.path.join(current_dir, local_file_dir)
-            image_dir = 'images\\image_' + image.split(':')[0]
+            image_dir = 'images/image_' + image.split(':')[0]
             image_dir = os.path.join(current_dir, image_dir)
             copy_dir(image_dir, local_dir)
             token = secrets.token_hex(16)
@@ -789,32 +887,33 @@ def create_experiment(request):
 
             ssh_port, http_port = ports
             client = docker.from_env()
-            # service, password = create_service(
-            #     input_client=client,
-            #     image_name=image,
-            #     service_name=container_name,
-            #     ssh_port=ssh_port,
-            #     http_port=http_port,
-            #     token=token,
-            #     num_cpu=num_cpu,
-            #     mem_size=mem_size,
-            #     from_volume_path=local_dir,
-            #     to_volume_path=workdir,
-            #     network='test',
-            #     task_num=1,
-            # )
-            container, password = create_container(
+            service, password = create_service(
                 input_client=client,
                 image_name=image,
-                container_name=container_name,
+                service_name=container_name,
                 ssh_port=ssh_port,
                 http_port=http_port,
-                num_cpu=num_cpu,
-                mem_size=mem_size_g,
                 token=token,
+                num_cpu=num_cpu,
+                mem_size=mem_size,
                 from_volume_path=local_dir,
-                to_volume_path=workdir
+                to_volume_path=workdir,
+                network_name=network_name,
+                task_num=1,
             )
+            # update_service_by_id(client, service.id)  //need to update!!!
+            # container, password = create_container(
+            #     input_client=client,
+            #     image_name=image,
+            #     container_name=container_name,
+            #     ssh_port=ssh_port,
+            #     http_port=http_port,
+            #     num_cpu=num_cpu,
+            #     mem_size=mem_size_g,
+            #     token=token,
+            #     from_volume_path=local_dir,
+            #     to_volume_path=workdir
+            # )
             # url = get_service_url_by_id(client, container_name) 这里也是！！！
             url = get_container_url_by_id(client, token, http_port)
             print('url', url)
