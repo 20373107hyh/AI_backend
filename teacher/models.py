@@ -1,3 +1,6 @@
+import datetime
+
+import pytz
 from django.db import models
 from users.models import UserInfo
 
@@ -90,6 +93,8 @@ class Experiment(models.Model):
     experiment_password = models.CharField('ssh密码', max_length=100)
     create_time = models.DateTimeField('实验创建时间', auto_now_add=True)
     update_time = models.DateTimeField('实验更新时间', auto_now=True)
+    job_id = models.CharField(max_length=100)
+    expire_time = models.DateTimeField(default=datetime.datetime.now)
 
     def __str__(self):
         return str(self.course_id)
@@ -97,3 +102,9 @@ class Experiment(models.Model):
     class Meta:
         verbose_name = "实验信息"
         verbose_name_plural = verbose_name
+
+    def get_remaining_time(self):
+        # 获取剩余时间
+        remaining_time = (self.expire_time - datetime.datetime.now(pytz.utc)).total_seconds()
+        remaining_time = int(remaining_time)
+        return remaining_time if remaining_time > 0 else 0

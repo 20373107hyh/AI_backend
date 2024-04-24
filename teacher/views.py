@@ -6,6 +6,10 @@ import socket
 import string
 import tarfile
 from io import BytesIO
+import datetime
+import pytz
+from apscheduler.triggers.date import DateTrigger
+from backend.scheduler import scheduler, delete_experiment
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
 from django.db.models import ProtectedError
@@ -845,24 +849,40 @@ def create_experiment(request):
     if course:
         if Experiment.objects.filter(user_id=user_id, course_id=course_id).exists():
             experiment = Experiment.objects.get(user_id=user_id, course_id=course_id)
+            countdown = experiment.get_remaining_time()
+            run_date = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=experiment.experiment_countdown)
+            trigger = DateTrigger(run_date=run_date)
+            job = scheduler.add_job(delete_experiment, trigger, [experiment.experiment_id])
+            experiment.job_id = job.id
+            experiment.save()
             data = {
                 'experiment_id': experiment.experiment_id,
                 'experiment_course': experiment.course.course_id,
                 'experiment_url': experiment.experiment_url,
-                'experiment_countdown': experiment.experiment_countdown,
+                'experiment_countdown': countdown,
             }
             return JsonResponse({'errno': 100000, 'msg': '实验创建成功', 'data': data})
         else:
             image = course.use_image_name
             url = ''
             time = course.course_limit_time * 3600
+            expire_time = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=time)
+            job_id = ''
+            password = ''
             new_experiment = Experiment(
                 course=course,
                 user_id=user,
                 experiment_countdown=time,
                 experiment_url=url,
+                job_id=job_id,
+                expire_time=expire_time,
+                experiment_password=password,
             )
             new_experiment.save()
+            run_date = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=new_experiment.experiment_countdown)
+            trigger = DateTrigger(run_date=run_date)
+            job = scheduler.add_job(delete_experiment, trigger, [new_experiment.experiment_id])
+            new_experiment.job_id = job.id
             container_name = 'experiment_' + str(new_experiment.experiment_id)
             network_name = 'experiment_' + str(new_experiment.experiment_id)
             print('container_name', container_name)
@@ -912,7 +932,7 @@ def create_experiment(request):
                 mem_size=mem_size_g,
                 token=token,
                 from_volume_path=local_dir,
-                to_volume_path=workdir
+                to_volume_path=workdir,
             )
             # url = get_service_url_by_id(client, container_name) 这里也是！！！
             url = get_container_url_by_id(client, token, http_port)
@@ -956,6 +976,7 @@ def save_experiment(request):
     experiment_id = request.POST.get('experiment_id')
     countdown = request.POST.get('countdown')
     experiment = Experiment.objects.get(experiment_id=experiment_id)
+    scheduler.remove_job(experiment.job_id)
     experiment.experiment_countdown = countdown
     experiment.save()
     return JsonResponse({'errno': 100000, 'msg': '实验保存成功'})
