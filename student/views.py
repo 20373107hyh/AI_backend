@@ -10,7 +10,7 @@ from teacher.models import Course
 @csrf_exempt
 def get_course_list(request):
 
-    courses_list = Course.objects.all().order_by('course_chapter')
+    courses_list = Course.objects.all().order_by('course_chapter__chapter_number')
     courses_info = []
 
     for student_course in courses_list:
@@ -29,6 +29,33 @@ def get_course_list(request):
         return JsonResponse({'errno': 100000, 'msg': '请求课程成功', 'data': courses_info})
     else:
         return JsonResponse({'errno': 100001, 'msg': '未能找到该学生的课程'})
+
+
+@csrf_exempt
+def list_course_by_chapter(request):
+    courses = Course.objects.all().order_by('course_chapter__chapter_number')
+    course_dict = {}
+    for course in courses:
+        course_detail = {
+            "course_id": course.course_id,
+            "author_name": course.author_id.realname,
+            "course_name": course.course_name,
+            "course_intro": course.course_intro,
+            "course_aim": course.course_aim,
+            "use_image_name": course.use_image_name,
+            "course_limit_time": course.course_limit_time,
+            "course_difficulty": course.course_difficulty,
+            "course_chapter": course.course_chapter.chapter_number,
+            "chapter_name": course.course_chapter.chapter_name,
+            "chapter_intro": course.course_chapter.chapter_intro,
+        }
+        if course.course_chapter.chapter_number in course_dict:
+            course_dict[course.course_chapter.chapter_number].append(course_detail)
+        else:
+            course_dict[course.course_chapter.chapter_number] = [course_detail]
+    course_list_json = list(course_dict.values())
+    print(course_list_json)
+    return JsonResponse({'errno': 100000, 'msg': '课程查询成功', 'data': course_list_json})
 
 
 @csrf_exempt

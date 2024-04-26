@@ -48,6 +48,7 @@ class Container(models.Model):
 class Chapter(models.Model):
     chapter_number = models.IntegerField('章节编号', primary_key=True)
     chapter_name = models.CharField('章节名词', max_length=100)
+    chapter_intro = models.CharField('章节简介', max_length=500)
 
 
 class Course(models.Model):
@@ -108,3 +109,9 @@ class Experiment(models.Model):
         remaining_time = (self.expire_time - datetime.datetime.now(pytz.utc)).total_seconds()
         remaining_time = int(remaining_time)
         return remaining_time if remaining_time > 0 else 0
+
+
+class FileUpload(models.Model):
+    user_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    course_id = models.ForeignKey(Course, on_delete=models.CASCADE)
+    file_path = models.TextField()  #保存文件的相对路径
