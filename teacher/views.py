@@ -18,6 +18,8 @@ from django.db.models import ProtectedError
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse, FileResponse
 from docker.types import Resources
+
+from student.models import Student_Courses
 from teacher.models import Images, Container, Course, Score, Experiment, Chapter, FileUpload
 from users.models import UserInfo
 from time import sleep
@@ -534,18 +536,26 @@ def list_users_have_uploaded(request):
     course_id = request.POST.get('course_id')
     course_instance = Course.objects.get(course_id=course_id)
     file_uploads = FileUpload.objects.filter(course_id=course_instance)
-    user_set = set()
+
+    user_list = []
 
     for file_upload in file_uploads:
-
         user = file_upload.user_id
-        user_tuple = (user.user_id, user.realname)
-        user_set.add(user_tuple)
+        user_info = {'user_id': user.user_id, 'realname': user.realname, 'score': '教师未评分'}
+        print(user_info)
+        # Check if user_id already exists in user_list
+        if not any(u['user_id'] == user_info['user_id'] for u in user_list):
+            student_course_instance = Student_Courses.objects.filter(course_id=course_instance,
+                                                                     student_id=user).first()
 
-    user_list = list(user_set)
-    sorted_user_list = sorted(user_list, key=lambda x: x[0])
+            if student_course_instance and student_course_instance.course_score:
+                user_info["score"] = student_course_instance.course_score
+            print(user_info)
+            user_list.append(user_info)
+
+    sorted_user_list = sorted(user_list, key=lambda x: x['user_id'])
+
     return JsonResponse({'errno': 100000, 'msg': '已上传用户查询成功', 'data': sorted_user_list})
-
 
 @csrf_exempt
 def list_user_files_uploaded(request):
@@ -898,10 +908,28 @@ def delete_course(request):
 @csrf_exempt
 def get_course_info(request):
     course_id = request.POST.get('course_id')
+    user_id = request.POST.get('user_id')
     course = Course.objects.get(course_id=course_id)
+    student = UserInfo.objects.get(user_id=user_id)
     image_name = course.use_image_name
     print(image_name)
     image = Images.objects.get(image_name=image_name)
+    if not course:
+        return JsonResponse({'errno': 100001, 'msg': '未能找到对应的课程'})
+    experiment = Experiment.objects.filter(user_id=user_id, course_id=course_id).first()
+    score = Student_Courses.objects.filter(student_id=student, course_id=course).first()
+    if not score:
+        course_score = '教师未评分'
+    else:
+        course_score = score.course_score
+    status = ''
+    countdown = -1
+    if not experiment:
+        status = 'uncreated'
+    else:
+        status = 'running'
+        countdown = experiment.get_remaining_time()
+        print(countdown)
     if course:
         course_json = {
             "course_id": course.course_id,
@@ -915,7 +943,10 @@ def get_course_info(request):
             "course_chapter": course.course_chapter.chapter_number,
             "chapter_name": course.course_chapter.chapter_name,
             "cpu_num": image.cpu_num,
-            "mem_size": image.mem_size
+            "mem_size": image.mem_size,
+            'experiment_status': status,
+            'experiment_countdown': countdown,
+            'score': course_score,
         }
         return JsonResponse({'errno': 100000, 'msg': '课程查询成功', 'data': course_json})
     else:
@@ -1107,6 +1138,27 @@ def delete_experiment(request):
 
 
 @csrf_exempt
+def delete_experiment_by_course_user(request):
+    course_id = request.POST.get('course_id')
+    user_id = request.POST.get('user_id')
+    try:
+        experiment = Experiment.objects.get(course_id=course_id, user_id=user_id)
+    except ObjectDoesNotExist:
+        return JsonResponse({'errno': 100001, 'msg': '实验不存在，删除失败'})
+    experiment_id = experiment.experiment_id
+    client = docker.from_env()
+    container_name = 'experiment_' + str(experiment_id)
+    print(experiment_id)
+
+    remove_container_by_id(client, container_name)
+    container_path = './users_' + str(experiment.user_id.user_id) + '/container_experiment_' + str(experiment_id)
+    shutil.rmtree(container_path)
+    experiment.delete()
+
+    return JsonResponse({'errno': 100000, 'msg': '实验删除成功'})
+
+
+@csrf_exempt
 def save_experiment(request):
     experiment_id = request.POST.get('experiment_id')
     countdown = request.POST.get('countdown')
@@ -1116,5 +1168,21 @@ def save_experiment(request):
     experiment.save()
     return JsonResponse({'errno': 100000, 'msg': '实验保存成功'})
 
+
+@csrf_exempt
+def rate_experiment(request):
+    course_id = request.POST.get('course_id')
+    course = Course.objects.get(course_id=course_id)
+    user_id = request.POST.get('user_id')
+    user = UserInfo.objects.get(user_id=user_id)
+    student_course = Student_Courses.objects.filter(student_id=user, course_id=course).first()
+    score = request.POST.get('score')
+    score = int(score)
+    if not student_course:
+        student_course = Student_Courses(course_id=course, student_id=user, course_score=score)
+    else:
+        student_course.course_score = score
+    student_course.save()
+    return JsonResponse({'errno': 100000, 'msg': '实验评分成功'})
 
 

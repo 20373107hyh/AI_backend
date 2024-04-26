@@ -1,10 +1,12 @@
 import json
 
+from django.contrib.auth.models import User
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from student.models import Student_Courses
-from teacher.models import Course
+from teacher.models import Course, Experiment
+from users.models import UserInfo
 
 
 @csrf_exempt
@@ -61,10 +63,26 @@ def list_course_by_chapter(request):
 @csrf_exempt
 def get_course(request):
     course_id = request.POST.get('course_id')
+    user_id = request.POST.get('user_id')
+    student = UserInfo.objects.get(user_id=user_id)
+    course = Course.objects.get(course_id=course_id)
     print(course_id)
-    course = Course.objects.filter(course_id=course_id).first()
     if not course:
         return JsonResponse({'errno': 100001, 'msg': '未能找到对应的课程'})
+    experiment = Experiment.objects.filter(user_id=user_id, course_id=course_id).first()
+    score = Student_Courses.objects.filter(student_id=student, course_id=course).first()
+    if not score:
+        course_score = '教师未评分'
+    else:
+        course_score = score.course_score
+    status = ''
+    countdown = -1
+    if not experiment:
+        status = 'uncreated'
+    else:
+        status = 'running'
+        countdown = experiment.get_remaining_time()
+        print(countdown)
     data = {
         'course_id': course.course_id,
         'course_name': course.course_name,
@@ -73,6 +91,9 @@ def get_course(request):
         'course_difficulty': course.course_difficulty,
         'course_chapter': course.course_chapter.chapter_number,
         'course_limit_time': course.course_limit_time,
+        'experiment_status': status,
+        'experiment_countdown': countdown,
+        'score': course_score,
     }
     return JsonResponse({'errno': 100000, 'msg': '查找课程成功', 'data': data})
 

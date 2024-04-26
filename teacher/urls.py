@@ -18,6 +18,7 @@ urlpatterns = [
     path('get_course_info/', views.get_course_info, name='get_course_info'),
     path('create_experiment/', views.create_experiment, name='create_experiment'),
     path('delete_experiment/', views.delete_experiment, name='delete_experiment'),
+    path('delete_experiment_by_course_user/', views.delete_experiment_by_course_user, name='delete_experiment_by_course_user'),
     path('save_experiment/', views.save_experiment, name='save_experiment'),
     path('upload_file/', views.upload_file, name='upload_file'),
     path('upload_tar_file/', views.upload_tar_file, name='upload_tar_file'),
@@ -32,4 +33,5 @@ urlpatterns = [
     path('list_chapter/', views.list_chapter, name='list_chapter'),
     path('delete_chapter/', views.delete_chapter, name='delete_chapter'),
     path('add_chapter/', views.add_chapter, name='add_chapter'),
+    path('rate_experiment/', views.rate_experiment, name='rate_experiment'),
 ]
