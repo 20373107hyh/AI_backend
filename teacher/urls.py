@@ -34,4 +34,8 @@ urlpatterns = [
     path('delete_chapter/', views.delete_chapter, name='delete_chapter'),
     path('add_chapter/', views.add_chapter, name='add_chapter'),
     path('rate_experiment/', views.rate_experiment, name='rate_experiment'),
+    path('list_user/', views.list_user, name='list_user'),
+    path('add_user/', views.add_user, name='add_user'),
+    path('delete_user/', views.delete_user, name='delete_user'),
+    path('alter_user/', views.alter_user, name='alter_user'),
 ]

@@ -5,9 +5,24 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from student.models import Student_Courses
-from teacher.models import Course, Experiment
+from teacher.models import Course, Experiment, Container
 from users.models import UserInfo
 
+
+@csrf_exempt
+def get_user_info(request):
+    user_id = request.POST.get('user_id')
+    current_user = UserInfo.objects.get(user_id=user_id)
+    data = {
+        'user_id': current_user.user_id,
+        'username': current_user.username,
+        'password': current_user.password,
+        'realname': current_user.realname,
+        'email': current_user.email,
+        'phone': current_user.phone,
+        'status': current_user.status
+    }
+    return JsonResponse({'errno': 100000, 'msg': '请求用户信息成功', 'data': data})
 
 @csrf_exempt
 def get_course_list(request):
@@ -79,9 +94,16 @@ def get_course(request):
     countdown = -1
     if not experiment:
         status = 'uncreated'
+        # ssh_port = -1
+        # ssh_password = ''
     else:
         status = 'running'
         countdown = experiment.get_remaining_time()
+        # container_name = 'experiment_' + str(experiment.experiment_id)
+        # print(container_name)
+        # container = Container.objects.filter(container_name=container_name).first()
+        # ssh_port = container.ssh_port
+        # ssh_password = container.ssh_password
         print(countdown)
     data = {
         'course_id': course.course_id,
@@ -94,6 +116,8 @@ def get_course(request):
         'experiment_status': status,
         'experiment_countdown': countdown,
         'score': course_score,
+        # 'ssh_port': ssh_port,
+        # 'ssh_password': ssh_password,
     }
     return JsonResponse({'errno': 100000, 'msg': '查找课程成功', 'data': data})
 

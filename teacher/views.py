@@ -3,6 +3,7 @@ import random
 import secrets
 import shutil
 import socket
+import stat
 import string
 import tarfile
 from io import BytesIO
@@ -65,6 +66,18 @@ def run_container(input_client, image_name):
 #     print(service.short_id)
 #     return service
 
+
+def set_permissions_recursive(path):
+    # 设置目录的权限
+    os.chmod(path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+    # 遍历目录中所有的文件和子目录
+    for root, dirs, files in os.walk(path):
+        for dir in dirs:
+            # 设置子目录的权限
+            os.chmod(os.path.join(root, dir), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        for file in files:
+            # 设置文件的权限
+            os.chmod(os.path.join(root, file), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
 
 
 def create_service(input_client: docker.DockerClient,
@@ -180,8 +193,11 @@ def get_service_url_by_id(input_client, service_name, token, http_port):
 
 
 def get_container_url_by_id(input_client, token, http_port):
+    # response = requests.get('https://api.ipify.org')
+    # ip = response.text
+    # print(ip)
+    # return 'http://39.105.203.95:' + str(http_port) + '/lab?token=' + token
     return 'http://127.0.0.1:' + str(http_port) + '/lab?token=' + token
-
 
 def stop_container(container):
     container.stop()
@@ -232,6 +248,8 @@ def copy_dir(from_path, to_path):
         shutil.rmtree(to_path)
     print('1:', from_path, to_path)
     shutil.copytree(from_path, to_path)
+    set_permissions_recursive(from_path)
+    set_permissions_recursive(to_path)
 
 
 def commit_container_by_id(input_client, container_name, image_name, from_path, to_path):
@@ -243,6 +261,8 @@ def commit_container_by_id(input_client, container_name, image_name, from_path, 
     os.makedirs(image_dir, exist_ok=True)
     origin_dir = './images/container_' + container_name
     print(from_path, image_dir)
+    set_permissions_recursive(from_path)
+    set_permissions_recursive(image_dir)
     copy_dir(from_path, image_dir)
     # os.rename(origin_dir, image_dir)
     return image
@@ -369,7 +389,9 @@ def upload_file(request):
     user_id = request.POST.get('user_id')
     container_name = request.POST.get('container_name')
     path = request.POST.get('path')
-
+    user_dir = f'users_{user_id}/containers_{container_name}'
+    os.makedirs(user_dir, exist_ok=True)
+    set_permissions_recursive(user_dir)
     if tar_file is not None:  # tar file exists, process as before
         # Convert the uploaded file to BytesIO
         tar_file_IO_content = io.BytesIO(tar_file.read())
@@ -384,6 +406,7 @@ def upload_file(request):
                 save_directory = f'users_{user_id}/container_{container_name}/{path}/{os.path.dirname(member.name)}'
                 if not os.path.exists(save_directory):
                     os.makedirs(save_directory)
+                set_permissions_recursive(save_directory)
                 save_path = f'{save_directory}/{os.path.basename(member.name)}'
                 default_storage.save(save_path, ContentFile(file_content))
     else:  # No tar file, process single file or multiple files
@@ -395,9 +418,10 @@ def upload_file(request):
             save_directory = f'users_{user_id}/container_{container_name}/{path}'
             if not os.path.exists(save_directory):
                 os.makedirs(save_directory)
+            set_permissions_recursive(save_directory)
             save_path = f'{save_directory}/{file.name}'
             default_storage.save(save_path, ContentFile(file_IO_content.getvalue()))
-
+    set_permissions_recursive(user_dir)
     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
 
 
@@ -408,14 +432,15 @@ def upload_tar_file(request):
     container_name = request.POST.get('container_name')
     path = request.POST.get('path')
     tar_content = ContentFile(tar_file.read())
-
+    save_directory = f'users_{user_id}/container_{container_name}'
+    set_permissions_recursive(save_directory)
     with tarfile.open(fileobj=tar_content) as tar:
         for member in tar.getmembers():
             if member.is_file():
                 file = tar.extractfile(member)
                 save_path = 'users_{}/container_{}/{}/{}'.format(user_id, container_name, path, member.name)
                 default_storage.save(save_path, ContentFile(file.read()))
-
+    set_permissions_recursive(save_directory)
     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
 
 
@@ -504,7 +529,8 @@ def upload_exp_file(request):
             course_folder_name = "course_" + str(course_id)
             user_folder = './users_{}/'.format(user_id)
             course_folder = os.path.join(user_folder, course_folder_name)
-
+            set_permissions_recursive(user_folder)
+            set_permissions_recursive(course_folder)
             for file in files:
                 # 获取源文件和目标文件的完整路径
                 source = os.path.join('./users_{}'.format(user_id), 'container_{}'.format(container_name), file)
@@ -523,7 +549,8 @@ def upload_exp_file(request):
                 user = UserInfo.objects.get(user_id=user_id)
                 course = Course.objects.get(course_id=course_id)
                 FileUpload.objects.create(user_id=user, course_id=course, file_path=file)
-
+            set_permissions_recursive(user_folder)
+            set_permissions_recursive(course_folder)
             return JsonResponse({'errno': 100000, 'msg': '文件上传成功'})
         else:
             return JsonResponse({'errno': 100001, 'msg': '未找到相关实验'})
@@ -613,12 +640,10 @@ def show_container(request):
 
 @csrf_exempt
 def show_images(request):
-    client = docker.from_env()
-    image_list = list_image(client)
+    image_list = Images.objects.all()
     image_names = []
     for image in image_list:
-        for tag in image.tags:
-            image_names.append(tag)
+        image_names.append(image.image_name)
     return HttpResponse(json.dumps({'errno': 100000, 'msg': '镜像查询成功', 'data': image_names}, ensure_ascii=False), content_type="application/json;charset=UTF-8")
 
 
@@ -648,6 +673,8 @@ def add_new_container(request):
     image_dir = os.path.join(current_dir, image_dir)
     copy_dir(image_dir, local_dir)
     print(image_dir, local_dir)
+    set_permissions_recursive(image_dir)
+    set_permissions_recursive(local_dir)
     copied_dir = os.path.join(user_dir, 'image_' + image_name.split(':')[0])
     # os.rename(copied_dir, local_dir)
     # os.makedirs(local_dir, exist_ok=True)
@@ -1063,6 +1090,9 @@ def create_experiment(request):
             local_dir = os.path.join(current_dir, local_file_dir)
             image_dir = 'images/image_' + image.split(':')[0]
             image_dir = os.path.join(current_dir, image_dir)
+            os.makedirs(local_dir, exist_ok=True)
+            set_permissions_recursive(local_dir)
+            set_permissions_recursive(image_dir)
             copy_dir(image_dir, local_dir)
             token = secrets.token_hex(16)
             ports = set()
@@ -1186,3 +1216,59 @@ def rate_experiment(request):
     return JsonResponse({'errno': 100000, 'msg': '实验评分成功'})
 
 
+@csrf_exempt
+def list_user(request):
+    users = UserInfo.objects.all()
+    user_list = list(users)
+    user_json = [{
+        'user_id': user.user_id,
+        'username': user.username,
+        'password': user.password,
+        'realname': user.realname,
+        'email': user.email,
+        'phone': user.phone,
+        'status': user.status
+    } for user in user_list]
+    return JsonResponse({'errno': 100000, 'msg': '用户列表查询成功', 'data': user_json})
+
+
+@csrf_exempt
+def add_user(request):
+    user_id = request.POST.get('user_id')
+    username = request.POST.get('username')
+    password = request.POST.get('password')
+    realname = request.POST.get('realname')
+    email = request.POST.get('email')
+    phone = request.POST.get('phone')
+    status = request.POST.get('status')
+    user = UserInfo(user_id=user_id, username=username, password=password, realname=realname, email=email, phone=phone, status=status)
+    user.save()
+    return JsonResponse({'errno': 100000, 'msg': '用户添加成功'})
+
+
+@csrf_exempt
+def alter_user(request):
+    user_id = request.POST.get('user_id')
+    username = request.POST.get('username')
+    password = request.POST.get('password')
+    realname = request.POST.get('realname')
+    email = request.POST.get('email')
+    phone = request.POST.get('phone')
+    status = request.POST.get('status')
+    user = UserInfo.objects.get(user_id=user_id)
+    user.username = username
+    user.password = password
+    user.realname = realname
+    user.email = email
+    user.phone = phone
+    user.status = status
+    user.save()
+    return JsonResponse({'errno': 100000, 'msg': '用户信息修改成功'})
+
+
+@csrf_exempt
+def delete_user(request):
+    user_id = request.POST.get('user_id')
+    user = UserInfo.objects.get(user_id=user_id)
+    user.delete()
+    return JsonResponse({'errno': 100000, 'msg': '用户删除成功'})
