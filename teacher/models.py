@@ -115,3 +115,15 @@ class FileUpload(models.Model):
     user_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
     course_id = models.ForeignKey(Course, on_delete=models.CASCADE)
     file_path = models.TextField()  #保存文件的相对路径
+
+
+class CourseFile(models.Model):
+    file_id = models.AutoField(primary_key=True)
+    file_name = models.CharField('文件名', max_length=100)
+    create_time = models.DateTimeField('创建时间', auto_now_add=True)
+    update_time = models.DateTimeField('更新时间', auto_now=True)
+
+class Student_View_Time(models.Model):
+    student_id = models.ForeignKey(UserInfo, on_delete=models.CASCADE)
+    file_name = models.ForeignKey(CourseFile, on_delete=models.CASCADE)
+    view_time = models.IntegerField(default=0)

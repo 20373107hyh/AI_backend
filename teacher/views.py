@@ -8,11 +8,14 @@ import string
 import tarfile
 from io import BytesIO
 import datetime
+from urllib import request
+
+import openpyxl
 import pytz
 from apscheduler.triggers.date import DateTrigger
 from django.contrib.auth.models import User
 
-from backend.scheduler import scheduler, delete_experiment
+from backend.scheduler import scheduler, delete_exp
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
 from django.db.models import ProtectedError
@@ -21,7 +24,7 @@ from django.http import JsonResponse, HttpResponse, FileResponse
 from docker.types import Resources
 
 from student.models import Student_Courses
-from teacher.models import Images, Container, Course, Score, Experiment, Chapter, FileUpload
+from teacher.models import Images, Container, Course, Score, Experiment, Chapter, FileUpload, CourseFile , Student_View_Time
 from users.models import UserInfo
 from time import sleep
 from django.core.files.storage import default_storage
@@ -135,24 +138,29 @@ def update_service(input_client: docker.DockerClient, service_id: str):
 
 
 def create_container(input_client, image_name, container_name, ssh_port, http_port, token, num_cpu, mem_size, from_volume_path, to_volume_path):
-    password = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(10))
-    volumes = {
-        from_volume_path: {'bind': to_volume_path, 'mode': 'rw'},
-    }
-    container = input_client.containers.run(
-        image=image_name,
-        ports={f'8888/tcp': http_port, f'22/tcp': ssh_port},
-        detach=True,
-        name=container_name,
-        command=['/usr/bin/supervisord'],
-        cpu_period=100000,
-        cpu_quota=int(float(num_cpu) * 100000),
-        mem_limit=mem_size,
-        volumes=volumes,
-        environment={"JUPYTER_TOKEN": token, "ROOT_PASSWORD": password},
-    )
-    sleep(15)
-    return container, password
+    try:
+        password = ''.join(random.choice(string.ascii_letters + string.digits) for i in range(10))
+        error = ''
+        volumes = {
+            from_volume_path: {'bind': to_volume_path, 'mode': 'rw'},
+        }
+        container = input_client.containers.run(
+            image=image_name,
+            ports={f'8888/tcp': http_port, f'22/tcp': ssh_port},
+            detach=True,
+            name=container_name,
+            command=['/usr/bin/supervisord'],
+            cpu_period=100000,
+            cpu_quota=int(float(num_cpu) * 100000),
+            mem_limit=mem_size,
+            volumes=volumes,
+            environment={"JUPYTER_TOKEN": token, "ROOT_PASSWORD": password},
+        )
+        sleep(15)
+        return container, password, error
+    except Exception as e:
+        return None, None, str(e)
+
 
 
 def get_url(container):
@@ -253,19 +261,23 @@ def copy_dir(from_path, to_path):
 
 
 def commit_container_by_id(input_client, container_name, image_name, from_path, to_path):
-    # put_archive_to_container(from_path, to_path, container_id)
-    container = input_client.containers.get(container_name)
-    image = container.commit(repository=image_name)
-    dir_name = 'image_' + image_name
-    image_dir = './images/' + dir_name
-    os.makedirs(image_dir, exist_ok=True)
-    origin_dir = './images/container_' + container_name
-    print(from_path, image_dir)
-    set_permissions_recursive(from_path)
-    set_permissions_recursive(image_dir)
-    copy_dir(from_path, image_dir)
-    # os.rename(origin_dir, image_dir)
-    return image
+    try:
+        error = ''
+        # put_archive_to_container(from_path, to_path, container_id)
+        container = input_client.containers.get(container_name)
+        image = container.commit(repository=image_name)
+        dir_name = 'image_' + image_name
+        image_dir = './images/' + dir_name
+        os.makedirs(image_dir, exist_ok=True)
+        origin_dir = './images/container_' + container_name
+        print(from_path, image_dir)
+        set_permissions_recursive(from_path)
+        set_permissions_recursive(image_dir)
+        copy_dir(from_path, image_dir)
+        # os.rename(origin_dir, image_dir)
+        return image, error
+    except Exception as e:
+        return None, str(e)
 
 
 def commit_container_in_service(input_client, service_id, image_name):
@@ -389,7 +401,7 @@ def upload_file(request):
     user_id = request.POST.get('user_id')
     container_name = request.POST.get('container_name')
     path = request.POST.get('path')
-    user_dir = f'users_{user_id}/containers_{container_name}'
+    user_dir = f'users_{user_id}/container_{container_name}'
     os.makedirs(user_dir, exist_ok=True)
     set_permissions_recursive(user_dir)
     if tar_file is not None:  # tar file exists, process as before
@@ -442,6 +454,99 @@ def upload_tar_file(request):
                 default_storage.save(save_path, ContentFile(file.read()))
     set_permissions_recursive(save_directory)
     return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+@csrf_exempt
+def upload_chunk(request):
+    if request.FILES.get('file'):
+        user_id = request.POST.get('user_id')
+        container_name = request.POST.get('container_name')
+        path = request.POST.get('path')
+        user_dir = f'users_{user_id}/container_{container_name}'
+        os.makedirs(user_dir, exist_ok=True)
+        set_permissions_recursive(user_dir)
+
+        chunk_file = request.FILES.get('file')
+        chunk_filename = chunk_file.name
+        save_directory = f'users_{user_id}/container_{container_name}/{path}/chunks'
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+        set_permissions_recursive(save_directory)
+        save_path = f'{save_directory}/{chunk_filename}'
+
+        default_storage.save(save_path, ContentFile(chunk_file.read()))
+    else:
+        return JsonResponse({'errno': 100001, 'msg': '文件保存失败'})
+
+    return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+@csrf_exempt
+def upload_course_chunk(request):
+    if request.FILES.get('file'):
+        user_dir = f'course_files'
+        os.makedirs(user_dir, exist_ok=True)
+        set_permissions_recursive(user_dir)
+
+        chunk_file = request.FILES.get('file')
+        chunk_filename = chunk_file.name
+        save_directory = f'course_files/chunks'
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+        set_permissions_recursive(save_directory)
+        save_path = f'{save_directory}/{chunk_filename}'
+
+        default_storage.save(save_path, ContentFile(chunk_file.read()))
+    else:
+        return JsonResponse({'errno': 100001, 'msg': '文件保存失败'})
+
+    return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+@csrf_exempt
+def merge_chunks(request):
+    filename = request.POST.get('filename')  # 获取文件名
+    chunks = int(request.POST.get('chunks'))  # 获取文件分片数量
+    user_id = request.POST.get('user_id')
+    container_name = request.POST.get('container_name')
+    path = request.POST.get('path')
+    save_directory = f'users_{user_id}/container_{container_name}/{path}'
+    chunks_directory = f'{save_directory}/chunks'
+
+    with open(f'{save_directory}/{filename}', 'wb') as output_file:
+        for i in range(chunks):
+            chunk_filename = f'chunk-{i}-{filename}'
+            chunk_path = f'{chunks_directory}/{chunk_filename}'
+
+            with open(chunk_path, 'rb') as chunk_file:
+                shutil.copyfileobj(chunk_file, output_file)
+
+    shutil.rmtree(chunks_directory)  # 合并完成后删除保存分片的文件夹
+
+    return JsonResponse({'errno': 100000, 'msg': '文件合并成功'})
+
+
+@csrf_exempt
+def merge_course_chunks(request):
+    filename = request.POST.get('filename')  # 获取文件名
+    chunks = int(request.POST.get('chunks'))  # 获取文件分片数量
+    save_directory = f'course_files'
+    chunks_directory = f'{save_directory}/chunks'
+
+    with open(f'{save_directory}/{filename}', 'wb') as output_file:
+        for i in range(chunks):
+            chunk_filename = f'chunk-{i}-{filename}'
+            chunk_path = f'{chunks_directory}/{chunk_filename}'
+
+            with open(chunk_path, 'rb') as chunk_file:
+                shutil.copyfileobj(chunk_file, output_file)
+
+    shutil.rmtree(chunks_directory)  # 合并完成后删除保存分片的文件夹
+    course_file = CourseFile(
+        file_name=filename,
+    )
+    course_file.save()
+    return JsonResponse({'errno': 100000, 'msg': '文件合并成功'})
 
 
 def list_files(startpath):
@@ -498,6 +603,79 @@ def load_experiment_files(request):
 #         return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
 #     except OSError as e:
 #         return JsonResponse({'errno': 100001, 'msg': e.strerror})
+
+
+@csrf_exempt
+def upload_course_files(request):
+    tar_file = request.FILES.get('tarFile')  # get tar file
+    if tar_file is not None:  # tar file exists, process as before
+        # Convert the uploaded file to BytesIO
+        tar_file_IO_content = io.BytesIO(tar_file.read())
+
+        # Below line handle corrupted tar file and throws Exception
+        tar = tarfile.open(fileobj=tar_file_IO_content)
+
+        # Process tar members
+        for member in tar:
+            if member.isfile():
+                file_content = tar.extractfile(member).read()
+                save_directory = f'course_files'
+                if not os.path.exists(save_directory):
+                    os.makedirs(save_directory, exist_ok=True)
+                set_permissions_recursive(save_directory)
+                save_path = f'{save_directory}/{os.path.basename(member.name)}'
+                default_storage.save(save_path, ContentFile(file_content))
+                course_file = CourseFile(
+                    file_name=member.name,
+                )
+                course_file.save()
+
+    else:  # No tar file, process single file or multiple files
+        files = request.FILES.getlist('files[]')  # get files
+        for file in files:
+            # Convert the uploaded file to BytesIO
+            file_IO_content = io.BytesIO(file.read())
+
+            save_directory = f'course_files'
+            if not os.path.exists(save_directory):
+                os.makedirs(save_directory, exist_ok=True)
+            set_permissions_recursive(save_directory)
+            save_path = f'{save_directory}/{file.name}'
+            default_storage.save(save_path, ContentFile(file_IO_content.getvalue()))
+            set_permissions_recursive(save_path)
+            course_file = CourseFile(
+                file_name=file.name,
+            )
+            course_file.save()
+    return JsonResponse({'errno': 100000, 'msg': '文件保存成功'})
+
+
+@csrf_exempt
+def load_course_files(request):
+    dir_path = "course_files"
+    os.makedirs(dir_path, exist_ok=True)
+    files = CourseFile.objects.all()
+    file_list = []
+    for file in files:
+        file_dict = {'filename': file.file_name}
+        file_list.append(file_dict)
+    return JsonResponse({'errno': 100000, 'msg': '文件查找成功', 'data': file_list})
+
+
+@csrf_exempt
+def delete_course_files(request):
+    file_paths = json.loads(request.POST['file_paths'])   # getlist 用来获取一个列表
+    dir_path = "course_files"
+    for file_path in file_paths:    # 循环删除每个文件
+        file_name = file_path
+        file_path = dir_path + "/" + file_path
+        try:
+            os.remove(file_path)
+            course_file = CourseFile.objects.get(file_name=file_name)
+            course_file.delete()
+        except OSError as e:
+            return JsonResponse({'errno': 100001, 'msg': e.strerror})
+    return JsonResponse({'errno': 100000, 'msg': '文件删除成功'})
 
 
 @csrf_exempt
@@ -610,6 +788,18 @@ def download_file(request):
 
 
 @csrf_exempt
+def download_course_file(request):
+    filename = request.POST.get('filename')
+    file_path = f'./course_files/{filename}'
+    print(file_path)
+    if os.path.exists(file_path):
+        response = FileResponse(open(file_path, 'rb'))
+        return response
+
+    return JsonResponse({'errno': 100001, 'msg': '请求的文件在服务器上未找到', 'data': None})
+
+
+@csrf_exempt
 def delete_exp_file(request):
     user_id = request.POST.get('user_id')
     course_id = request.POST.get('course_id')
@@ -688,7 +878,7 @@ def add_new_container(request):
     ssh_port, http_port = ports
     client = docker.from_env()
     print(num_cpu, mem_size_g)
-    container, password = create_container(
+    container, password, error = create_container(
         input_client=client,
         image_name=image_name,
         container_name=container_name,
@@ -700,6 +890,8 @@ def add_new_container(request):
         from_volume_path=local_dir,
         to_volume_path=workdir
     )
+    if container is None or password is None:
+        return JsonResponse({'errno': 100001, 'msg': error})
     url = get_container_url_by_id(client, token, http_port)
     new_container = Container()
     new_container.container_id = container.short_id
@@ -757,7 +949,9 @@ def add_new_image(request):  # 修改
     local_file_dir = 'users_' + str(author_id) + '/container_' + container_name
     from_path = os.path.join(current_dir, local_file_dir)
     to_path = workdir
-    image = commit_container_by_id(client, container_name, new_image_name, from_path, to_path)
+    image, error = commit_container_by_id(client, container_name, new_image_name, from_path, to_path)
+    if image is None:
+        return JsonResponse({'errno': 100001, 'msg': error})
     new_image = Images(
         image_id=image.id,
         image_name=image.tags[0],
@@ -774,8 +968,11 @@ def delete_container(request):
     container_name = request.POST.get('container_name')
     author_id = request.POST.get('author_id')
     client = docker.from_env()
+    try:
+        remove_container_by_id(client, container_name)
+    except Exception as e:
+        return JsonResponse({'errno': 100001, 'msg': e})
     container = Container.objects.filter(container_name=container_name).first()
-    remove_container_by_id(client, container_name)
     container_path = './users_' + author_id + '/container_' + container_name
     shutil.rmtree(container_path)
     container.delete()
@@ -794,6 +991,8 @@ def delete_container(request):
 def delete_image(request):
     image_name = request.POST.get('image_name')
     image = Images.objects.get(image_name=image_name)
+    if Course.objects.filter(use_image_name=image.image_name).exists():
+        return JsonResponse({'errno': 100001, 'msg': '有课程正在使用该镜像，删除失败'})
     image_path = "./images/image_" + image_name.split(':')[0]
     print(image_path)
     client = docker.from_env()
@@ -802,11 +1001,9 @@ def delete_image(request):
         image.delete()
         shutil.rmtree(image_path)
         return JsonResponse({'errno': 100000, 'msg': '镜像删除成功'})
-    except APIError as e:
-        if 'image is being used by stopped container' in str(e):
-            return JsonResponse({'errno': 100000, 'msg': '镜像删除失败，有容器正在使用该镜像'})
-        else:
-            return JsonResponse({'errno': 100000, 'msg': '镜像删除失败，发生未知错误'})
+    except Exception as e:
+        return JsonResponse({'errno': 100000, 'msg': str(e)})
+
 
 
 # @csrf_exempt
@@ -832,6 +1029,8 @@ def delete_image(request):
 def search_container(request):
     container_id = request.POST.get('container_id')
     container = Container.objects.filter(container_id=container_id).first()
+    if container is None:
+        return JsonResponse({'errno': 100001, 'msg': '容器不存在'})
     client = docker.from_env()
     local_container = client.containers.get(container_id)
     workdir = local_container.attrs['Config']['WorkingDir']
@@ -925,6 +1124,8 @@ def list_course(request):
 def delete_course(request):
     course_id = request.POST.get('course_id')
     course = Course.objects.get(course_id=course_id)
+    if Experiment.objects.filter(course=course).exists():
+        return JsonResponse({'errno': 100000, 'msg': '课程删除失败，有学生正在做实验'})
     if course:
         course.delete()
         return JsonResponse({'errno': 100000, 'msg': '课程删除成功'})
@@ -1014,13 +1215,14 @@ def delete_chapter(request):
     chapter_num = request.POST.get('chapter_num')
     try:
         chapter = Chapter.objects.get(chapter_number=chapter_num)
+        if Course.objects.filter(course_chapter=chapter).exists():
+            return JsonResponse({'errno': 100002, 'msg': '章节删除失败，有关联课程'})
         chapter.delete()
         return JsonResponse({'errno': 100000, 'msg': '章节删除成功'})
     except Chapter.DoesNotExist:
-        return JsonResponse({'errno': 100001, 'msg': '章节不存在'}, status=404)
+        return JsonResponse({'errno': 100001, 'msg': '章节不存在'})
     except ProtectedError:
-        return JsonResponse({'errno': 100002, 'msg': '章节删除失败，有关联课程'},
-                            status=400)
+        return JsonResponse({'errno': 100002, 'msg': '章节删除失败，有关联课程'})
 
 
 
@@ -1037,11 +1239,15 @@ def create_experiment(request):
         if Experiment.objects.filter(user_id=user_id, course_id=course_id).exists():
             experiment = Experiment.objects.get(user_id=user_id, course_id=course_id)
             countdown = experiment.get_remaining_time()
-            run_date = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=experiment.experiment_countdown)
-            trigger = DateTrigger(run_date=run_date)
-            job = scheduler.add_job(delete_experiment, trigger, [experiment.experiment_id])
-            experiment.job_id = job.id
-            experiment.save()
+            # run_date = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=countdown)
+            # print(run_date)
+            # trigger = DateTrigger(run_date=run_date)
+            # job = scheduler.add_job(delete_exp, 'date', run_date=run_date, args=[experiment.experiment_id])
+            # if not scheduler.running:
+            #     scheduler.start()
+            # print(countdown)
+            # experiment.job_id = job.id
+            # experiment.save()
             client = docker.from_env()
             container_name = 'experiment_' + str(experiment.experiment_id)
             container = client.containers.get(container_name)
@@ -1072,8 +1278,12 @@ def create_experiment(request):
             )
             new_experiment.save()
             run_date = datetime.datetime.now(pytz.utc) + datetime.timedelta(seconds=new_experiment.experiment_countdown)
+            print(run_date)
+            print(time)
             trigger = DateTrigger(run_date=run_date)
-            job = scheduler.add_job(delete_experiment, trigger, [new_experiment.experiment_id])
+            job = scheduler.add_job(delete_exp, 'date', run_date=run_date, args=[new_experiment.experiment_id])
+            if not scheduler.running:
+                scheduler.start()
             new_experiment.job_id = job.id
             container_name = 'experiment_' + str(new_experiment.experiment_id)
             network_name = 'experiment_' + str(new_experiment.experiment_id)
@@ -1118,7 +1328,7 @@ def create_experiment(request):
             # )
             # update_service(client, service.id)
             print(num_cpu, mem_size_g)
-            container, password = create_container(
+            container, password, error = create_container(
                 input_client=client,
                 image_name=image,
                 container_name=container_name,
@@ -1272,3 +1482,100 @@ def delete_user(request):
     user = UserInfo.objects.get(user_id=user_id)
     user.delete()
     return JsonResponse({'errno': 100000, 'msg': '用户删除成功'})
+
+
+@csrf_exempt
+def update_view_course_file(request):
+    user_id = request.POST.get('user_id')
+    filename = request.POST.get('filename')
+    student = UserInfo.objects.get(user_id=user_id)
+    file = CourseFile.objects.get(file_name=filename)
+    flag = request.POST.get('flag')
+    view_time = 0
+    student_view_time = Student_View_Time.objects.filter(student_id=student, file_name=file)
+    if not student_view_time:
+        new_student_view_time = Student_View_Time(student_id=student, file_name=file)
+        new_student_view_time.save()
+    else:
+        student_view_time = student_view_time.first()
+        view_time = student_view_time.view_time + int(flag)
+        student_view_time.view_time = view_time
+        student_view_time.save()
+    return JsonResponse({'errno': 100000, 'msg': '观看时长更新成功', 'data': {'view_time': view_time}})
+
+
+@csrf_exempt
+def get_student_info(request):
+    user_id = request.POST.get('user_id')
+    print(user_id)
+    user = UserInfo.objects.get(user_id=user_id)
+    student = UserInfo.objects.get(user_id=user_id)
+    user_info = {
+        'user_name': student.username,
+        'realname': student.realname,
+        'email': student.email,
+        'phone': student.phone,
+    }
+    experiment_condition = []
+    courses = Course.objects.all()
+    for course in courses:
+        score = '未评分'
+        isUploaded = '未上传'
+        if FileUpload.objects.filter(course_id=course, user_id=user).exists():
+            isUploaded = '已上传'
+            if Student_Courses.objects.filter(course_id=course, student_id=user).exists():
+                student_course = Student_Courses.objects.get(course_id=course, student_id=user)
+                score = student_course.course_score
+        experiment_info = {
+            'experiment_name': course.course_name,
+            'isUploaded': isUploaded,
+            'score': score,
+        }
+        experiment_condition.append(experiment_info)
+    files_view_times = []
+    file_list = CourseFile.objects.all()
+    for file in file_list:
+        filename = file.file_name
+        view_time = 0
+        if Student_View_Time.objects.filter(student_id=user, file_name=file).exists():
+            student_view = Student_View_Time.objects.get(student_id=user, file_name=file)
+            view_time = student_view.view_time
+        file_info = {
+            'filename': filename,
+            'view_time': view_time,
+        }
+        files_view_times.append(file_info)
+    data = {
+        'user_info': user_info,
+        'experiment_condition': experiment_condition,
+        'files_view_times': files_view_times
+    }
+    return JsonResponse({'errno': 100000, 'msg': '用户查询成功', 'data': data})
+
+
+@csrf_exempt
+def add_user_by_excel(request):
+    if request.method == 'POST':
+        excel_file = request.FILES["excel_file"]
+        mime_type = excel_file.content_type
+
+        if mime_type in ['application/vnd.ms-excel',
+                         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']:
+            print('This is an Excel file.')
+        else:
+            return JsonResponse(data={'status': 'fail', 'msg': '上传的不是excel文件'})
+        workbook = openpyxl.load_workbook(excel_file)
+        sheet = workbook.active
+
+        # 通过循环读取excel中的用户名、密码等信息并创建用户
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            username, password, email, full_name, phone, role = row
+            user = UserInfo(username=username,
+                            password=password,
+                            realname=full_name,
+                            email=email,
+                            phone=phone,
+                            status=role)
+            user.save()
+
+        return JsonResponse(data={'status': 'success', 'msg': '创建用户成功'})
